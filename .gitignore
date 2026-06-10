@@ -1,0 +1,34 @@
+# Node / CDK
+node_modules/
+*.js
+!jest.config.js
+*.d.ts
+*.js.map
+
+# CDK output
+cdk.out/
+*.tsbuildinfo
+
+# Secrets — NEVER commit these
+.env
+.env.*
+!.env.example
+*.pem
+
+# AWS credentials (defense in depth — they should live in ~/.aws not here)
+.aws/
+
+# Python (for the diagrams script)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
