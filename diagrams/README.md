@@ -2,7 +2,8 @@
 
 This folder holds the **AWS-side** architecture diagrams. App-behavior
 flows (capture, recall, refinement, failure modes) live in the
-companion repo at `BrainTwin/docs/diagrams/`.
+companion repo at
+**[sabyasachibisoyi/BrainTwin/docs/diagrams/](https://github.com/sabyasachibisoyi/BrainTwin/tree/main/docs/diagrams)**.
 
 ## What's here
 
@@ -18,7 +19,7 @@ companion repo at `BrainTwin/docs/diagrams/`.
 | Layer | Tool | Lives in |
 |-------|------|----------|
 | Topology (intent) | `architecture.py` → PNG | this repo |
-| Per-flow lifecycles | Mermaid in `.md` | `BrainTwin/docs/diagrams/` |
+| Per-flow lifecycles | Mermaid in `.md` | [BrainTwin/docs/diagrams/](https://github.com/sabyasachibisoyi/BrainTwin/tree/main/docs/diagrams) |
 | Topology (reality) | `cdk-dia` against CDK assembly | this repo (post-M.2) |
 
 The intent picture and the reality picture should always match. CI

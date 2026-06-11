@@ -5,12 +5,13 @@ Infrastructure-as-code for the **DigitalTwin** product (codename: BrainTwin).
 This repo holds the AWS CDK TypeScript stack and the cloud topology
 diagrams. The application code (FastAPI backend, Chrome extension,
 Telegram bot) lives in the companion repo at
-**[BrainTwin](https://github.com/<your-github-user>/BrainTwin)**.
+**[sabyasachibisoyi/BrainTwin](https://github.com/sabyasachibisoyi/BrainTwin)**.
 
 > **Naming:** Codename is **BrainTwin** (used for repo, IAM role names,
 > stack names, S3 buckets). Public product brand is **DigitalTwin**
 > (used in customer-facing UI, the domain `digitaltwin.app`, and docs).
-> See `BrainTwin/docs/phase4.0.6-deployment-design.md` §11 for the split.
+> See [BrainTwin/docs/phase4.0.6-deployment-design.md §11](https://github.com/sabyasachibisoyi/BrainTwin/blob/main/docs/phase4.0.6-deployment-design.md)
+> for the split.
 
 ---
 
@@ -89,9 +90,10 @@ npx cdk deploy --context region=us-west-2           # primary region
 | What it deploys | nothing — application only | the AWS account |
 | Portfolio signal | "Look how the product works" | "Look, infrastructure as code" |
 
-The split is described in `BrainTwin/docs/phase4.0.6-deployment-design.md`
-§3.0–§3.1 and the diagrams-placement rationale is in
-`BrainTwin/docs/diagrams/README.md`.
+The split is described in
+[BrainTwin/docs/phase4.0.6-deployment-design.md §3.0–§3.1](https://github.com/sabyasachibisoyi/BrainTwin/blob/main/docs/phase4.0.6-deployment-design.md)
+and the diagrams-placement rationale is in
+[BrainTwin/docs/diagrams/README.md](https://github.com/sabyasachibisoyi/BrainTwin/blob/main/docs/diagrams/README.md).
 
 ---
 
@@ -104,7 +106,8 @@ The split is described in `BrainTwin/docs/phase4.0.6-deployment-design.md`
   reliability gain).
 - Active-active is a Phase 5+ decision.
 
-Full reasoning in `BrainTwin/docs/phase4.0.6-deployment-design.md` §3.0.
+Full reasoning in
+[BrainTwin/docs/phase4.0.6-deployment-design.md §3.0](https://github.com/sabyasachibisoyi/BrainTwin/blob/main/docs/phase4.0.6-deployment-design.md).
 
 ---
 
