@@ -3,6 +3,18 @@
 exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template matches snapshot 1`] = `
 {
   "Outputs": {
+    "ComputePrimaryEbsVolumeId23E7CFA6": {
+      "Description": "Primary EBS volume ID. RETAIN policy — survives cdk destroy.",
+      "Value": {
+        "Ref": "ComputeEbsVolume07C044D41",
+      },
+    },
+    "ComputePrimaryInstanceId5A264371": {
+      "Description": "Primary EC2 instance ID. Use with \`aws ssm start-session --target <id>\` to get a shell on the box (no SSH).",
+      "Value": {
+        "Ref": "ComputeInstance03D945A8C",
+      },
+    },
     "NetworkElasticIpAddressCF8BCA7B": {
       "Description": "Static public IPv4 — set this as the A record for api.digitaltwin.app in Cloudflare (orange-cloud / proxied).",
       "Value": {
@@ -12,6 +24,63 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
         ],
       },
     },
+    "StorageAppRepoUri1A1C7319": {
+      "Description": "ECR repo URI. From your Mac: \`aws ecr get-login-password | docker login --username AWS --password-stdin <uri>; docker push <uri>:vX.Y.Z\`. M.3 user-data templates the pull side.",
+      "Value": {
+        "Fn::Join": [
+          "",
+          [
+            {
+              "Fn::Select": [
+                4,
+                {
+                  "Fn::Split": [
+                    ":",
+                    {
+                      "Fn::GetAtt": [
+                        "StorageAppRepo7969A3A5",
+                        "Arn",
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+            ".dkr.ecr.",
+            {
+              "Fn::Select": [
+                3,
+                {
+                  "Fn::Split": [
+                    ":",
+                    {
+                      "Fn::GetAtt": [
+                        "StorageAppRepo7969A3A5",
+                        "Arn",
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+            ".",
+            {
+              "Ref": "AWS::URLSuffix",
+            },
+            "/",
+            {
+              "Ref": "StorageAppRepo7969A3A5",
+            },
+          ],
+        ],
+      },
+    },
+    "StorageStateBucketNameB4CCE033": {
+      "Description": "S3 bucket for Litestream WAL, Chroma nightly snapshots, and captured images. RETAIN — survives cdk destroy.",
+      "Value": {
+        "Ref": "StorageStateBucket934B7EF1",
+      },
+    },
   },
   "Parameters": {
     "BootstrapVersion": {
@@ -19,8 +88,350 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
       "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
       "Type": "AWS::SSM::Parameter::Value<String>",
     },
+    "SsmParameterValueawsservicecanonicalubuntuserver2204stablecurrentarm64hvmebsgp2amiidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Default": "/aws/service/canonical/ubuntu/server/22.04/stable/current/arm64/hvm/ebs-gp2/ami-id",
+      "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
+    },
   },
   "Resources": {
+    "ComputeEbsAttachment09427EA70": {
+      "Properties": {
+        "Device": "/dev/sdf",
+        "InstanceId": {
+          "Ref": "ComputeInstance03D945A8C",
+        },
+        "VolumeId": {
+          "Ref": "ComputeEbsVolume07C044D41",
+        },
+      },
+      "Type": "AWS::EC2::VolumeAttachment",
+    },
+    "ComputeEbsVolume07C044D41": {
+      "DeletionPolicy": "Retain",
+      "Properties": {
+        "AvailabilityZone": "us-west-2a",
+        "Encrypted": true,
+        "MultiAttachEnabled": false,
+        "Size": 20,
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Name",
+            "Value": "BrainTwin-EBS-0",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+        "VolumeType": "gp3",
+      },
+      "Type": "AWS::EC2::Volume",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ComputeEipAssociation23D14D81": {
+      "Properties": {
+        "AllocationId": {
+          "Fn::GetAtt": [
+            "NetworkElasticIp736301B4",
+            "AllocationId",
+          ],
+        },
+        "InstanceId": {
+          "Ref": "ComputeInstance03D945A8C",
+        },
+      },
+      "Type": "AWS::EC2::EIPAssociation",
+    },
+    "ComputeInstance03D945A8C": {
+      "DependsOn": [
+        "ComputeInstanceRoleDefaultPolicyBD7127B5",
+        "ComputeInstanceRoleC860B428",
+      ],
+      "Properties": {
+        "AvailabilityZone": "us-west-2a",
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/sda1",
+            "Ebs": {
+              "DeleteOnTermination": true,
+              "Encrypted": true,
+              "VolumeSize": 10,
+              "VolumeType": "gp3",
+            },
+          },
+        ],
+        "IamInstanceProfile": {
+          "Ref": "ComputeInstance0InstanceProfileEC28C8A2",
+        },
+        "ImageId": {
+          "Ref": "SsmParameterValueawsservicecanonicalubuntuserver2204stablecurrentarm64hvmebsgp2amiidC96584B6F00A464EAD1953AFF4B05118Parameter",
+        },
+        "InstanceType": "t4g.small",
+        "LaunchTemplate": {
+          "LaunchTemplateName": "Instance0LaunchTemplate",
+          "Version": {
+            "Fn::GetAtt": [
+              "ComputeInstance0LaunchTemplateD30E2DD1",
+              "LatestVersionNumber",
+            ],
+          },
+        },
+        "SecurityGroupIds": [
+          {
+            "Fn::GetAtt": [
+              "NetworkSecurityGroup6335DB55",
+              "GroupId",
+            ],
+          },
+        ],
+        "SubnetId": {
+          "Ref": "NetworkVpcBrainTwinPublicSubnet1SubnetCBC0100A",
+        },
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Name",
+            "Value": "BrainTwin-EC2-0",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+        "UserData": {
+          "Fn::Base64": "#!/bin/bash
+set -euxo pipefail
+exec > >(tee -a /var/log/braintwin-userdata.log | logger -t braintwin-userdata) 2>&1
+echo '== braintwin user-data starting =='
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y --no-install-recommends \\
+  ca-certificates curl gnupg lsb-release jq awscli e2fsprogs
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+apt-get update -y
+apt-get install -y --no-install-recommends \\
+  docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl enable --now docker
+id -u braintwin >/dev/null 2>&1 || useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin braintwin
+EBS_SIZE_GIB=20
+for i in $(seq 1 60); do
+  EBS_DEV=$(lsblk -dpno NAME,SIZE,TYPE | awk -v sz="\${EBS_SIZE_GIB}G" '$2==sz && $3=="disk" {print $1; exit}')
+  [ -n "$EBS_DEV" ] && break
+  echo "Waiting for \${EBS_SIZE_GIB}G EBS volume to appear (attempt $i)…"
+  sleep 2
+done
+if [ -z "$EBS_DEV" ]; then echo "EBS volume never appeared; aborting"; exit 1; fi
+echo "EBS volume is $EBS_DEV"
+if ! blkid "$EBS_DEV" >/dev/null 2>&1; then
+  echo "Fresh volume — formatting ext4 with label braintwin-data"
+  mkfs.ext4 -L braintwin-data "$EBS_DEV"
+else
+  echo "Existing filesystem on $EBS_DEV — skipping mkfs"
+fi
+mkdir -p /var/lib/braintwin/data
+grep -q "^LABEL=braintwin-data " /etc/fstab || echo "LABEL=braintwin-data /var/lib/braintwin/data ext4 defaults,noatime 0 2" >> /etc/fstab
+mount -a
+chown -R 10001:10001 /var/lib/braintwin/data
+mkdir -p /etc/caddy
+echo '== braintwin user-data complete =='
+echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
+        },
+      },
+      "Type": "AWS::EC2::Instance",
+    },
+    "ComputeInstance0InstanceProfileEC28C8A2": {
+      "Properties": {
+        "Roles": [
+          {
+            "Ref": "ComputeInstanceRoleC860B428",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::InstanceProfile",
+    },
+    "ComputeInstance0LaunchTemplateD30E2DD1": {
+      "Properties": {
+        "LaunchTemplateData": {
+          "MetadataOptions": {
+            "HttpTokens": "required",
+          },
+        },
+        "LaunchTemplateName": "Instance0LaunchTemplate",
+      },
+      "Type": "AWS::EC2::LaunchTemplate",
+    },
+    "ComputeInstanceRoleC860B428": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ec2.amazonaws.com",
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Description": "BrainTwin EC2 role — SSM Session Manager + CloudWatch agent. ECR pull, S3 state bucket, SSM Parameter Store reads are attached by storage.ts / secrets.ts / observability.ts.",
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition",
+                },
+                ":iam::aws:policy/AmazonSSMManagedInstanceCore",
+              ],
+            ],
+          },
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition",
+                },
+                ":iam::aws:policy/CloudWatchAgentServerPolicy",
+              ],
+            ],
+          },
+        ],
+        "RoleName": "BrainTwin-EC2-Role",
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
+    },
+    "ComputeInstanceRoleDefaultPolicyBD7127B5": {
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "s3:GetObject*",
+                "s3:GetBucket*",
+                "s3:List*",
+                "s3:DeleteObject*",
+                "s3:PutObject",
+                "s3:PutObjectLegalHold",
+                "s3:PutObjectRetention",
+                "s3:PutObjectTagging",
+                "s3:PutObjectVersionTagging",
+                "s3:Abort*",
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "StorageStateBucket934B7EF1",
+                    "Arn",
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "StorageStateBucket934B7EF1",
+                          "Arn",
+                        ],
+                      },
+                      "/*",
+                    ],
+                  ],
+                },
+              ],
+            },
+            {
+              "Action": [
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:GetDownloadUrlForLayer",
+                "ecr:BatchGetImage",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "StorageAppRepo7969A3A5",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": "ecr:GetAuthorizationToken",
+              "Effect": "Allow",
+              "Resource": "*",
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "ComputeInstanceRoleDefaultPolicyBD7127B5",
+        "Roles": [
+          {
+            "Ref": "ComputeInstanceRoleC860B428",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
+    },
     "CustomVpcRestrictDefaultSGCustomResourceProviderHandlerDC833E5E": {
       "DependsOn": [
         "CustomVpcRestrictDefaultSGCustomResourceProviderRole26592FE0",
@@ -488,6 +899,184 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
         },
       },
       "Type": "AWS::EC2::VPCGatewayAttachment",
+    },
+    "StorageAppRepo7969A3A5": {
+      "DeletionPolicy": "Delete",
+      "Properties": {
+        "EmptyOnDelete": true,
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Keep last 5 untagged images (orphan manifests)","selection":{"tagStatus":"untagged","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}},{"rulePriority":2,"description":"Keep last 30 tagged images (~3 months at weekly cadence)","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":30},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "braintwin/app",
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Delete",
+    },
+    "StorageStateBucket934B7EF1": {
+      "DeletionPolicy": "Retain",
+      "Properties": {
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256",
+              },
+            },
+          ],
+        },
+        "BucketName": "braintwin-state-123456789012-us-west-2",
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "AbortIncompleteMultipartUpload": {
+                "DaysAfterInitiation": 1,
+              },
+              "ExpirationInDays": 7,
+              "Id": "litestream-wal-expire-7d",
+              "NoncurrentVersionExpiration": {
+                "NoncurrentDays": 7,
+              },
+              "Prefix": "litestream/",
+              "Status": "Enabled",
+            },
+            {
+              "AbortIncompleteMultipartUpload": {
+                "DaysAfterInitiation": 1,
+              },
+              "ExpirationInDays": 30,
+              "Id": "chroma-nightly-expire-30d",
+              "NoncurrentVersionExpiration": {
+                "NoncurrentDays": 7,
+              },
+              "Prefix": "chroma-nightly/",
+              "Status": "Enabled",
+            },
+            {
+              "AbortIncompleteMultipartUpload": {
+                "DaysAfterInitiation": 1,
+              },
+              "Id": "images-transition-ia-30d",
+              "NoncurrentVersionExpiration": {
+                "NoncurrentDays": 30,
+              },
+              "Prefix": "images/",
+              "Status": "Enabled",
+              "Transitions": [
+                {
+                  "StorageClass": "STANDARD_IA",
+                  "TransitionInDays": 30,
+                },
+              ],
+            },
+          ],
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true,
+        },
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+        "VersioningConfiguration": {
+          "Status": "Enabled",
+        },
+      },
+      "Type": "AWS::S3::Bucket",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "StorageStateBucketPolicy27964DEE": {
+      "Properties": {
+        "Bucket": {
+          "Ref": "StorageStateBucket934B7EF1",
+        },
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "s3:*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false",
+                },
+              },
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*",
+              },
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "StorageStateBucket934B7EF1",
+                    "Arn",
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "StorageStateBucket934B7EF1",
+                          "Arn",
+                        ],
+                      },
+                      "/*",
+                    ],
+                  ],
+                },
+              ],
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+      },
+      "Type": "AWS::S3::BucketPolicy",
     },
   },
   "Rules": {

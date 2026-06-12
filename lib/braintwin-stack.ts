@@ -13,7 +13,9 @@
  */
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
+import { ComputeConstruct } from "./constructs/compute";
 import { NetworkConstruct } from "./constructs/network";
+import { StorageConstruct } from "./constructs/storage";
 import { RegionConfig } from "./stack-config";
 
 export interface BrainTwinStackProps extends cdk.StackProps {
@@ -27,6 +29,8 @@ export interface BrainTwinStackProps extends cdk.StackProps {
 export class BrainTwinStack extends cdk.Stack {
   public readonly config: RegionConfig;
   public readonly network: NetworkConstruct;
+  public readonly compute: ComputeConstruct;
+  public readonly storage: StorageConstruct;
 
   constructor(scope: Construct, id: string, props: BrainTwinStackProps) {
     super(scope, id, props);
@@ -46,19 +50,39 @@ export class BrainTwinStack extends cdk.Stack {
       config: this.config,
     });
 
-    // M.2.e–M.2.h still to land:
+    // M.2.e — Compute: EC2 + EBS + IAM role + EIP association + user-data.
+    this.compute = new ComputeConstruct(this, "Compute", {
+      config: this.config,
+      network: this.network,
+    });
+
+    // M.2.f — Storage: S3 state bucket + ECR app repo + lifecycle.
+    this.storage = new StorageConstruct(this, "Storage", {
+      config: this.config,
+    });
+
+    // ----- Cross-construct wiring (the stack is where this lives) -----
     //
-    //   const storage = new StorageConstruct(this, "Storage", { config: this.config });
+    // grantReadWrite: Litestream needs PUT + GET + DELETE under
+    // litestream/ + chroma-nightly/; the app needs the same on
+    // images/. ReadWrite covers all of it. Litestream uses the
+    // SDK; no need for separate scoping at the path level.
+    this.storage.stateBucket.grantReadWrite(this.compute.instanceRole);
+
+    // grantPull: BatchCheckLayerAvailability + GetDownloadUrlForLayer
+    // + BatchGetImage + GetAuthorizationToken. M.3 user-data does
+    // `aws ecr get-login-password | docker login` then `docker pull`.
+    this.storage.appRepo.grantPull(this.compute.instanceRole);
+
+    // M.2.g–M.2.h still to land:
+    //
     //   const secrets = new SecretsConstruct(this, "Secrets", { config: this.config });
+    //   secrets.grantReadAll(this.compute.instanceRole);
+    //
     //   const observability = new ObservabilityConstruct(this, "Observability", {
     //     config: this.config,
-    //   });
-    //   const compute = new ComputeConstruct(this, "Compute", {
-    //     config: this.config,
-    //     network: this.network,
-    //     storage,
-    //     secrets,
-    //     observability,
+    //     instances: this.compute.instances,
+    //     ebsVolumes: this.compute.ebsVolumes,
     //   });
   }
 }
