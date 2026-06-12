@@ -53,6 +53,46 @@ post-M.2) share labels.
 When you change CDK, update `architecture.py` to match. The CI check
 in Phase 4.0.6.1 will fail PRs that drift the two pictures.
 
+## Resource naming convention (universal — applies to every construct)
+
+Every AWS resource we create gets an explicit name prefixed with
+`BrainTwin` so the AWS Console shows at a glance which project owns
+it. The convention is **one source of truth in `stack-config.ts`** —
+change `BRAND` there, every resource name follows.
+
+Three flavors for three service formats:
+
+| Helper | Output | Use for |
+|---|---|---|
+| `brandedName("Vpc")` | `BrainTwin-Vpc` | VPC, Security Group, IAM role, EC2 instance, EBS volume, Budget |
+| `brandedLower("state")` | `braintwin-state` | S3 bucket name, ECR repo name (must be lowercase) |
+| `brandedPath("anthropic")` | `/braintwin/anthropic` | SSM Parameter Store, CloudWatch log groups |
+
+### How this shows up in the AWS Console
+
+For each resource type, we set the name in TWO complementary ways:
+
+1. **Explicit name property** where the construct supports it
+   (`vpcName`, `securityGroupName`, `bucketName`, `roleName`, etc.).
+   This becomes the actual resource Name AWS shows in console listings.
+2. **Tag `Name: "BrainTwin-…"`** via `cdk.Tags.of(construct).add(…)`.
+   This is what shows in any console view that has a Name column,
+   for resources where there's no explicit name property (EIP, IGW,
+   Route Table).
+
+Plus the universal `cdk.Tags.of(this).add("Project", "BrainTwin")` set
+at the stack level — this propagates to every child resource, so Cost
+Explorer / Resource Groups can filter "all things this project owns."
+
+### Gotcha — named resources can't be replace-updated
+
+For resources where we set an explicit `*Name` property (Security Group,
+S3 bucket, etc.), CloudFormation cannot do a *replace* update. If you
+ever change a property that would force replacement (e.g. moving a SG
+to a different VPC), CloudFormation errors out with "name already
+exists." Fix: `cdk destroy && cdk deploy` — fine for a single-stack
+project, would be unacceptable in prod with side traffic.
+
 ## Verify M.2.b/c is wired correctly
 
 ```bash
