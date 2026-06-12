@@ -15,6 +15,7 @@ import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { ComputeConstruct } from "./constructs/compute";
 import { NetworkConstruct } from "./constructs/network";
+import { SecretsConstruct } from "./constructs/secrets";
 import { StorageConstruct } from "./constructs/storage";
 import { RegionConfig } from "./stack-config";
 
@@ -31,6 +32,7 @@ export class BrainTwinStack extends cdk.Stack {
   public readonly network: NetworkConstruct;
   public readonly compute: ComputeConstruct;
   public readonly storage: StorageConstruct;
+  public readonly secrets: SecretsConstruct;
 
   constructor(scope: Construct, id: string, props: BrainTwinStackProps) {
     super(scope, id, props);
@@ -74,10 +76,16 @@ export class BrainTwinStack extends cdk.Stack {
     // `aws ecr get-login-password | docker login` then `docker pull`.
     this.storage.appRepo.grantPull(this.compute.instanceRole);
 
-    // M.2.g–M.2.h still to land:
-    //
-    //   const secrets = new SecretsConstruct(this, "Secrets", { config: this.config });
-    //   secrets.grantReadAll(this.compute.instanceRole);
+    // M.2.g — Secrets: SSM Parameter Store names + IAM grants.
+    // The construct does NOT create parameters (CFN cannot create
+    // SecureStrings — see secrets.ts docstring). Operator runs
+    // scripts/put-secrets.sh once to populate them out of band.
+    this.secrets = new SecretsConstruct(this, "Secrets", {
+      config: this.config,
+    });
+    this.secrets.grantReadAll(this.compute.instanceRole);
+
+    // M.2.h still to land:
     //
     //   const observability = new ObservabilityConstruct(this, "Observability", {
     //     config: this.config,

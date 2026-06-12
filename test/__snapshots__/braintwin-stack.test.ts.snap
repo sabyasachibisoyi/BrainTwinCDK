@@ -24,6 +24,10 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
         ],
       },
     },
+    "SecretsParameterNames73405963": {
+      "Description": "SSM SecureString parameters the app reads at boot. Populate BEFORE first M.3 deploy using scripts/put-secrets.sh (or one \`aws ssm put-parameter --type SecureString --name <name> --value <value>\` per param).",
+      "Value": "/braintwin/anthropic_key,/braintwin/bearer_token,/braintwin/telegram_token,/braintwin/cloudflare_api_token",
+    },
     "StorageAppRepoUri1A1C7319": {
       "Description": "ECR repo URI. From your Mac: \`aws ecr get-login-password | docker login --username AWS --password-stdin <uri>; docker push <uri>:vX.Y.Z\`. M.3 user-data templates the pull side.",
       "Value": {
@@ -419,6 +423,84 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
               "Action": "ecr:GetAuthorizationToken",
               "Effect": "Allow",
               "Resource": "*",
+            },
+            {
+              "Action": [
+                "ssm:GetParameter",
+                "ssm:GetParameters",
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:us-west-2:123456789012:parameter/braintwin/anthropic_key",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:us-west-2:123456789012:parameter/braintwin/bearer_token",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:us-west-2:123456789012:parameter/braintwin/telegram_token",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:us-west-2:123456789012:parameter/braintwin/cloudflare_api_token",
+                    ],
+                  ],
+                },
+              ],
+            },
+            {
+              "Action": "kms:Decrypt",
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": "ssm.us-west-2.amazonaws.com",
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":kms:us-west-2:123456789012:key/*",
+                  ],
+                ],
+              },
             },
           ],
           "Version": "2012-10-17",
