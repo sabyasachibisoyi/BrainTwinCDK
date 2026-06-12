@@ -2,11 +2,492 @@
 
 exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template matches snapshot 1`] = `
 {
+  "Outputs": {
+    "NetworkElasticIpAddressCF8BCA7B": {
+      "Description": "Static public IPv4 — set this as the A record for api.digitaltwin.app in Cloudflare (orange-cloud / proxied).",
+      "Value": {
+        "Fn::GetAtt": [
+          "NetworkElasticIp736301B4",
+          "PublicIp",
+        ],
+      },
+    },
+  },
   "Parameters": {
     "BootstrapVersion": {
       "Default": "/cdk-bootstrap/hnb659fds/version",
       "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
       "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+  },
+  "Resources": {
+    "CustomVpcRestrictDefaultSGCustomResourceProviderHandlerDC833E5E": {
+      "DependsOn": [
+        "CustomVpcRestrictDefaultSGCustomResourceProviderRole26592FE0",
+      ],
+      "Properties": {
+        "Code": {
+          "S3Bucket": "cdk-hnb659fds-assets-123456789012-us-west-2",
+          "S3Key": "7fa1e366ee8a9ded01fc355f704cff92bfd179574e6f9cfee800a3541df1b200.zip",
+        },
+        "Description": "Lambda function for removing all inbound/outbound rules from the VPC default security group",
+        "Handler": "__entrypoint__.handler",
+        "MemorySize": 128,
+        "Role": {
+          "Fn::GetAtt": [
+            "CustomVpcRestrictDefaultSGCustomResourceProviderRole26592FE0",
+            "Arn",
+          ],
+        },
+        "Runtime": "nodejs22.x",
+        "Timeout": 900,
+      },
+      "Type": "AWS::Lambda::Function",
+    },
+    "CustomVpcRestrictDefaultSGCustomResourceProviderRole26592FE0": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com",
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Sub": "arn:\${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+          },
+        ],
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "ec2:AuthorizeSecurityGroupIngress",
+                    "ec2:AuthorizeSecurityGroupEgress",
+                    "ec2:RevokeSecurityGroupIngress",
+                    "ec2:RevokeSecurityGroupEgress",
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":ec2:us-west-2:123456789012:security-group/",
+                          {
+                            "Fn::GetAtt": [
+                              "NetworkVpc7FB7348F",
+                              "DefaultSecurityGroup",
+                            ],
+                          },
+                        ],
+                      ],
+                    },
+                  ],
+                },
+              ],
+              "Version": "2012-10-17",
+            },
+            "PolicyName": "Inline",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
+    },
+    "NetworkElasticIp736301B4": {
+      "Properties": {
+        "Domain": "vpc",
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Name",
+            "Value": "BrainTwin-EIP",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+      },
+      "Type": "AWS::EC2::EIP",
+    },
+    "NetworkSecurityGroup6335DB55": {
+      "Properties": {
+        "GroupDescription": "BrainTwin EC2 — allow :443 from Cloudflare only; no :22 (SSH disabled, SSM Session Manager only)",
+        "GroupName": "BrainTwin-SG",
+        "SecurityGroupEgress": [
+          {
+            "CidrIp": "0.0.0.0/0",
+            "Description": "Allow all outbound traffic by default",
+            "IpProtocol": "-1",
+          },
+        ],
+        "SecurityGroupIngress": [
+          {
+            "CidrIp": "173.245.48.0/20",
+            "Description": "Cloudflare 173.245.48.0/20",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+          {
+            "CidrIp": "103.21.244.0/22",
+            "Description": "Cloudflare 103.21.244.0/22",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+          {
+            "CidrIp": "103.22.200.0/22",
+            "Description": "Cloudflare 103.22.200.0/22",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+          {
+            "CidrIp": "103.31.4.0/22",
+            "Description": "Cloudflare 103.31.4.0/22",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+          {
+            "CidrIp": "141.101.64.0/18",
+            "Description": "Cloudflare 141.101.64.0/18",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+          {
+            "CidrIp": "108.162.192.0/18",
+            "Description": "Cloudflare 108.162.192.0/18",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+          {
+            "CidrIp": "190.93.240.0/20",
+            "Description": "Cloudflare 190.93.240.0/20",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+          {
+            "CidrIp": "188.114.96.0/20",
+            "Description": "Cloudflare 188.114.96.0/20",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+          {
+            "CidrIp": "197.234.240.0/22",
+            "Description": "Cloudflare 197.234.240.0/22",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+          {
+            "CidrIp": "198.41.128.0/17",
+            "Description": "Cloudflare 198.41.128.0/17",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+          {
+            "CidrIp": "162.158.0.0/15",
+            "Description": "Cloudflare 162.158.0.0/15",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+          {
+            "CidrIp": "104.16.0.0/13",
+            "Description": "Cloudflare 104.16.0.0/13",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+          {
+            "CidrIp": "104.24.0.0/14",
+            "Description": "Cloudflare 104.24.0.0/14",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+          {
+            "CidrIp": "172.64.0.0/13",
+            "Description": "Cloudflare 172.64.0.0/13",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+          {
+            "CidrIp": "131.0.72.0/22",
+            "Description": "Cloudflare 131.0.72.0/22",
+            "FromPort": 443,
+            "IpProtocol": "tcp",
+            "ToPort": 443,
+          },
+        ],
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Name",
+            "Value": "BrainTwin-SG",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+        "VpcId": {
+          "Ref": "NetworkVpc7FB7348F",
+        },
+      },
+      "Type": "AWS::EC2::SecurityGroup",
+    },
+    "NetworkVpc7FB7348F": {
+      "Properties": {
+        "CidrBlock": "10.10.0.0/16",
+        "EnableDnsHostnames": true,
+        "EnableDnsSupport": true,
+        "InstanceTenancy": "default",
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Name",
+            "Value": "BrainTwin-Vpc",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+      },
+      "Type": "AWS::EC2::VPC",
+    },
+    "NetworkVpcBrainTwinPublicSubnet1DefaultRouteE11F335B": {
+      "DependsOn": [
+        "NetworkVpcVPCGW8F3799B5",
+      ],
+      "Properties": {
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": {
+          "Ref": "NetworkVpcIGW6BEA7B02",
+        },
+        "RouteTableId": {
+          "Ref": "NetworkVpcBrainTwinPublicSubnet1RouteTable39F881E7",
+        },
+      },
+      "Type": "AWS::EC2::Route",
+    },
+    "NetworkVpcBrainTwinPublicSubnet1RouteTable39F881E7": {
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Name",
+            "Value": "BrainTwin-PublicRouteTable",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+        "VpcId": {
+          "Ref": "NetworkVpc7FB7348F",
+        },
+      },
+      "Type": "AWS::EC2::RouteTable",
+    },
+    "NetworkVpcBrainTwinPublicSubnet1RouteTableAssociation0AF9212C": {
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "NetworkVpcBrainTwinPublicSubnet1RouteTable39F881E7",
+        },
+        "SubnetId": {
+          "Ref": "NetworkVpcBrainTwinPublicSubnet1SubnetCBC0100A",
+        },
+      },
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+    },
+    "NetworkVpcBrainTwinPublicSubnet1SubnetCBC0100A": {
+      "Properties": {
+        "AvailabilityZone": "us-west-2a",
+        "CidrBlock": "10.10.0.0/24",
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          {
+            "Key": "aws-cdk:subnet-name",
+            "Value": "BrainTwin-Public",
+          },
+          {
+            "Key": "aws-cdk:subnet-type",
+            "Value": "Public",
+          },
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Name",
+            "Value": "TestBrainTwinStack-us-west-2/Network/Vpc/BrainTwin-PublicSubnet1",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+        "VpcId": {
+          "Ref": "NetworkVpc7FB7348F",
+        },
+      },
+      "Type": "AWS::EC2::Subnet",
+    },
+    "NetworkVpcIGW6BEA7B02": {
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Name",
+            "Value": "BrainTwin-Igw",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+      },
+      "Type": "AWS::EC2::InternetGateway",
+    },
+    "NetworkVpcRestrictDefaultSecurityGroupCustomResource491E144D": {
+      "DeletionPolicy": "Delete",
+      "Properties": {
+        "Account": "123456789012",
+        "DefaultSecurityGroupId": {
+          "Fn::GetAtt": [
+            "NetworkVpc7FB7348F",
+            "DefaultSecurityGroup",
+          ],
+        },
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "CustomVpcRestrictDefaultSGCustomResourceProviderHandlerDC833E5E",
+            "Arn",
+          ],
+        },
+      },
+      "Type": "Custom::VpcRestrictDefaultSG",
+      "UpdateReplacePolicy": "Delete",
+    },
+    "NetworkVpcVPCGW8F3799B5": {
+      "Properties": {
+        "InternetGatewayId": {
+          "Ref": "NetworkVpcIGW6BEA7B02",
+        },
+        "VpcId": {
+          "Ref": "NetworkVpc7FB7348F",
+        },
+      },
+      "Type": "AWS::EC2::VPCGatewayAttachment",
     },
   },
   "Rules": {

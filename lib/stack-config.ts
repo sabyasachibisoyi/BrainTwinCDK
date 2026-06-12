@@ -19,6 +19,36 @@
  *   and is explicitly Phase 5+ work (see design §3.0.1).
  */
 
+// =============================================================================
+// Resource naming convention — universal across the stack.
+//
+// Every AWS resource we create gets an explicit name with a `BrainTwin`
+// prefix so the AWS Console shows at a glance which project it belongs to.
+// This is in addition to the universal `Project: BrainTwin` tag applied
+// at the stack level — tags are filterable, names are visible.
+//
+// Three flavors because different AWS services accept different formats:
+//   brandedName    → "BrainTwin-Vpc"        (Title/Pascal — VPC, SG, IAM, EC2)
+//   brandedLower   → "braintwin-state"      (lowercase — S3, ECR)
+//   brandedPath    → "/braintwin/anthropic" (slashed — SSM Parameter Store,
+//                                             CloudWatch log groups)
+//
+// One source of truth: change BRAND here, every resource name follows.
+// =============================================================================
+
+export const BRAND = "BrainTwin";
+
+/** "BrainTwin-Vpc". Use for VPC names, SG names, IAM roles, EC2 names. */
+export const brandedName = (suffix: string): string => `${BRAND}-${suffix}`;
+
+/** "braintwin-state". Use for S3 bucket names, ECR repo names. */
+export const brandedLower = (suffix: string): string =>
+  `${BRAND.toLowerCase()}-${suffix}`;
+
+/** "/braintwin/anthropic_key". Use for SSM Parameter paths, CloudWatch log groups. */
+export const brandedPath = (suffix: string): string =>
+  `/${BRAND.toLowerCase()}/${suffix}`;
+
 export interface RegionConfig {
   /** AWS region slug (e.g. "us-west-2"). Doubles as the CDK env.region. */
   readonly region: string;

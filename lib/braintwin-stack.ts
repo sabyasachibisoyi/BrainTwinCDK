@@ -13,6 +13,7 @@
  */
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
+import { NetworkConstruct } from "./constructs/network";
 import { RegionConfig } from "./stack-config";
 
 export interface BrainTwinStackProps extends cdk.StackProps {
@@ -25,6 +26,7 @@ export interface BrainTwinStackProps extends cdk.StackProps {
 
 export class BrainTwinStack extends cdk.Stack {
   public readonly config: RegionConfig;
+  public readonly network: NetworkConstruct;
 
   constructor(scope: Construct, id: string, props: BrainTwinStackProps) {
     super(scope, id, props);
@@ -39,9 +41,13 @@ export class BrainTwinStack extends cdk.Stack {
     cdk.Tags.of(this).add("Region", props.config.region);
     cdk.Tags.of(this).add("ManagedBy", "BrainTwinCDK");
 
-    // M.2.d onwards — constructs land here:
+    // M.2.d — Network: VPC + Security Group + Elastic IP.
+    this.network = new NetworkConstruct(this, "Network", {
+      config: this.config,
+    });
+
+    // M.2.e–M.2.h still to land:
     //
-    //   const network = new NetworkConstruct(this, "Network", { config: this.config });
     //   const storage = new StorageConstruct(this, "Storage", { config: this.config });
     //   const secrets = new SecretsConstruct(this, "Secrets", { config: this.config });
     //   const observability = new ObservabilityConstruct(this, "Observability", {
@@ -49,12 +55,10 @@ export class BrainTwinStack extends cdk.Stack {
     //   });
     //   const compute = new ComputeConstruct(this, "Compute", {
     //     config: this.config,
-    //     network,
+    //     network: this.network,
     //     storage,
     //     secrets,
     //     observability,
     //   });
-    //
-    // For M.2.b/c — empty.
   }
 }
