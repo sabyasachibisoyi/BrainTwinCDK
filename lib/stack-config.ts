@@ -102,7 +102,9 @@ export const CONFIG: Record<string, RegionConfig> = {
     availabilityZones: ["us-west-2a"],
     instanceType: "t4g.small",
     ebsSizeGiB: 20,
-    budgetThresholdsUSD: [50, 100, 150, 180],
+    // Monthly cap $25 (the max threshold doubles as the budget limit).
+    // Graduated early-warnings at 40/60/80/100% of the cap.
+    budgetThresholdsUSD: [10, 15, 20, 25],
     budgetAlertEmail: ALERT_EMAIL,
   },
   // Phase 5+ — NOT deployed on day one. The config sits here so
@@ -113,7 +115,7 @@ export const CONFIG: Record<string, RegionConfig> = {
     availabilityZones: ["ap-south-1a"],
     instanceType: "t4g.small",
     ebsSizeGiB: 20,
-    budgetThresholdsUSD: [50, 100, 150, 180],
+    budgetThresholdsUSD: [10, 15, 20, 25],
     budgetAlertEmail: ALERT_EMAIL,
   },
 };

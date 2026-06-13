@@ -1,0 +1,238 @@
+/**
+ * ObservabilityConstruct unit tests — Phase 4.0.6 M.2.h.
+ *
+ * Three independent concerns to validate:
+ *
+ *   - Log groups: correct names, retention, RETAIN policy.
+ *   - Budget: thresholds from config, scoped by Project tag (not
+ *     account-wide), forecasted AND actual notifications per threshold.
+ *   - DLM: daily schedule, 7-day retention, scoped by Project tag.
+ *
+ * Regression classes these catch: silent budget removal (operator
+ * stops getting alerts → surprise bill), log retention dropping to
+ * NEVER (silent unbounded log storage growth), DLM tag filter
+ * mismatching the volume's tag (silent backup gap).
+ */
+import * as cdk from "aws-cdk-lib";
+import { Match, Template } from "aws-cdk-lib/assertions";
+import { BrainTwinStack } from "../../lib/braintwin-stack";
+import { brandedName, brandedPath, getConfig } from "../../lib/stack-config";
+
+function makeStack(): cdk.Stack {
+  const app = new cdk.App();
+  return new BrainTwinStack(app, "TestStack-us-west-2", {
+    env: { account: "123456789012", region: "us-west-2" },
+    config: getConfig("us-west-2"),
+  });
+}
+
+describe("ObservabilityConstruct", () => {
+  describe("CloudWatch log groups", () => {
+    test("creates exactly two log groups (app + bot)", () => {
+      const t = Template.fromStack(makeStack());
+      t.resourceCountIs("AWS::Logs::LogGroup", 2);
+    });
+
+    test("app log group is at /braintwin/app", () => {
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::Logs::LogGroup", {
+        LogGroupName: brandedPath("app"),
+      });
+    });
+
+    test("bot log group is at /braintwin/bot", () => {
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::Logs::LogGroup", {
+        LogGroupName: brandedPath("bot"),
+      });
+    });
+
+    test("retention is 30 days (bounded cost + enough history)", () => {
+      const t = Template.fromStack(makeStack());
+      const groups = t.findResources("AWS::Logs::LogGroup");
+      for (const group of Object.values(groups)) {
+        // RetentionDays.ONE_MONTH = 30
+        expect(group.Properties.RetentionInDays).toBe(30);
+      }
+    });
+
+    test("log groups have RETAIN policy (survives cdk destroy for post-mortems)", () => {
+      const t = Template.fromStack(makeStack());
+      const groups = t.findResources("AWS::Logs::LogGroup");
+      for (const group of Object.values(groups)) {
+        expect(group.DeletionPolicy).toBe("Retain");
+        expect(group.UpdateReplacePolicy).toBe("Retain");
+      }
+    });
+  });
+
+  describe("AWS Budget", () => {
+    test("exactly one budget is created", () => {
+      const t = Template.fromStack(makeStack());
+      t.resourceCountIs("AWS::Budgets::Budget", 1);
+    });
+
+    test("budget is scoped to Project=BrainTwin tag (not account-wide)", () => {
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::Budgets::Budget", {
+        Budget: Match.objectLike({
+          CostFilters: Match.objectLike({
+            TagKeyValue: Match.arrayWith(["user:Project$BrainTwin"]),
+          }),
+        }),
+      });
+    });
+
+    test("budget amount = max threshold from config", () => {
+      const t = Template.fromStack(makeStack());
+      // Derive the expected cap from config so this doesn't drift when
+      // the thresholds change (the max threshold is the budget limit).
+      const maxBudget = Math.max(...getConfig("us-west-2").budgetThresholdsUSD);
+      t.hasResourceProperties("AWS::Budgets::Budget", {
+        Budget: Match.objectLike({
+          BudgetLimit: { Amount: maxBudget, Unit: "USD" },
+        }),
+      });
+    });
+
+    test("each threshold creates FORECASTED + ACTUAL notifications (= 2× thresholds)", () => {
+      const t = Template.fromStack(makeStack());
+      const budgets = t.findResources("AWS::Budgets::Budget");
+      const budget = Object.values(budgets)[0];
+      const notifications =
+        budget.Properties.NotificationsWithSubscribers ?? [];
+      // 4 thresholds × 2 notification types = 8
+      expect(notifications.length).toBe(8);
+    });
+
+    test("notifications include BOTH FORECASTED and ACTUAL types", () => {
+      const t = Template.fromStack(makeStack());
+      const budgets = t.findResources("AWS::Budgets::Budget");
+      const notifications =
+        Object.values(budgets)[0].Properties.NotificationsWithSubscribers ??
+        [];
+      const types = new Set(
+        notifications.map(
+          (n: { Notification: { NotificationType: string } }) =>
+            n.Notification.NotificationType,
+        ),
+      );
+      expect(types.has("FORECASTED")).toBe(true);
+      expect(types.has("ACTUAL")).toBe(true);
+    });
+
+    test("budget name = brandedName('Budget')", () => {
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::Budgets::Budget", {
+        Budget: Match.objectLike({ BudgetName: brandedName("Budget") }),
+      });
+    });
+  });
+
+  describe("DLM EBS snapshot policy", () => {
+    test("exactly one lifecycle policy", () => {
+      const t = Template.fromStack(makeStack());
+      t.resourceCountIs("AWS::DLM::LifecyclePolicy", 1);
+    });
+
+    test("policy targets EBS Volumes (not snapshots or instances)", () => {
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::DLM::LifecyclePolicy", {
+        PolicyDetails: Match.objectLike({
+          PolicyType: "EBS_SNAPSHOT_MANAGEMENT",
+          ResourceTypes: ["VOLUME"],
+        }),
+      });
+    });
+
+    test("targets volumes by Project=BrainTwin tag", () => {
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::DLM::LifecyclePolicy", {
+        PolicyDetails: Match.objectLike({
+          TargetTags: Match.arrayWith([
+            Match.objectLike({ Key: "Project", Value: "BrainTwin" }),
+          ]),
+        }),
+      });
+    });
+
+    test("schedule is daily (24h interval) in low-traffic window", () => {
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::DLM::LifecyclePolicy", {
+        PolicyDetails: Match.objectLike({
+          Schedules: Match.arrayWith([
+            Match.objectLike({
+              CreateRule: Match.objectLike({
+                Interval: 24,
+                IntervalUnit: "HOURS",
+                Times: Match.arrayWith(["03:00"]),
+              }),
+            }),
+          ]),
+        }),
+      });
+    });
+
+    test("retain rule keeps last 7 snapshots", () => {
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::DLM::LifecyclePolicy", {
+        PolicyDetails: Match.objectLike({
+          Schedules: Match.arrayWith([
+            Match.objectLike({
+              RetainRule: Match.objectLike({ Count: 7 }),
+            }),
+          ]),
+        }),
+      });
+    });
+
+    test("policy is ENABLED (not disabled by default)", () => {
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::DLM::LifecyclePolicy", {
+        State: "ENABLED",
+      });
+    });
+
+    test("DLM role can be assumed by the dlm service principal", () => {
+      const t = Template.fromStack(makeStack());
+      // Find the role assumed by dlm.amazonaws.com
+      const roles = t.findResources("AWS::IAM::Role");
+      const dlmRoleEntry = Object.entries(roles).find(([, role]) => {
+        const stmts = role.Properties.AssumeRolePolicyDocument.Statement;
+        return stmts.some((s: { Principal: { Service: string } }) =>
+          JSON.stringify(s.Principal).includes("dlm.amazonaws.com"),
+        );
+      });
+      expect(dlmRoleEntry).toBeDefined();
+    });
+  });
+
+  describe("Stack-level wiring (logs grant to compute.instanceRole)", () => {
+    test("instance role can write to BOTH log groups", () => {
+      const t = Template.fromStack(makeStack());
+      const policies = t.findResources("AWS::IAM::Policy");
+      const policyTexts = Object.values(policies).map((p) =>
+        JSON.stringify(p.Properties.PolicyDocument),
+      );
+      const concat = policyTexts.join("\n");
+      // CDK encodes log group ARNs as Fn::GetAtt references rather
+      // than literal names, so check for the relevant action.
+      expect(concat).toContain("logs:CreateLogStream");
+      expect(concat).toContain("logs:PutLogEvents");
+    });
+  });
+
+  describe("CloudFormation outputs", () => {
+    test("both log group names are advertised in outputs", () => {
+      const t = Template.fromStack(makeStack());
+      const outputs = t.findOutputs("*");
+      const found = Object.values(outputs).filter(
+        (o) =>
+          typeof o.Value === "string" &&
+          (o.Value as string).startsWith("/braintwin/"),
+      );
+      // app + bot log group names
+      expect(found.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+});

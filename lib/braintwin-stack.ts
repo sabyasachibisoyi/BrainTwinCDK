@@ -15,6 +15,7 @@ import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { ComputeConstruct } from "./constructs/compute";
 import { NetworkConstruct } from "./constructs/network";
+import { ObservabilityConstruct } from "./constructs/observability";
 import { SecretsConstruct } from "./constructs/secrets";
 import { StorageConstruct } from "./constructs/storage";
 import { RegionConfig } from "./stack-config";
@@ -33,6 +34,7 @@ export class BrainTwinStack extends cdk.Stack {
   public readonly compute: ComputeConstruct;
   public readonly storage: StorageConstruct;
   public readonly secrets: SecretsConstruct;
+  public readonly observability: ObservabilityConstruct;
 
   constructor(scope: Construct, id: string, props: BrainTwinStackProps) {
     super(scope, id, props);
@@ -85,12 +87,14 @@ export class BrainTwinStack extends cdk.Stack {
     });
     this.secrets.grantReadAll(this.compute.instanceRole);
 
-    // M.2.h still to land:
-    //
-    //   const observability = new ObservabilityConstruct(this, "Observability", {
-    //     config: this.config,
-    //     instances: this.compute.instances,
-    //     ebsVolumes: this.compute.ebsVolumes,
-    //   });
+    // M.2.h — Observability: CloudWatch log groups + AWS Budget + DLM.
+    // The Budget filters by Project=BrainTwin (universal stack tag set
+    // above); DLM targets the EBS volume by the same tag. EC2 gets
+    // CreateLogStream/PutLogEvents on the two log groups so the
+    // Docker awslogs driver in M.3 can ship container stdout.
+    this.observability = new ObservabilityConstruct(this, "Observability", {
+      config: this.config,
+    });
+    this.observability.grantLogWrite(this.compute.instanceRole);
   }
 }

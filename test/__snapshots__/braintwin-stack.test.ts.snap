@@ -24,6 +24,14 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
         ],
       },
     },
+    "ObservabilityAppLogGroupName154411FD": {
+      "Description": "CloudWatch log group for the FastAPI app. Tail via: aws logs tail /braintwin/app --follow --profile braintwin",
+      "Value": "/braintwin/app",
+    },
+    "ObservabilityBotLogGroupNameD506D891": {
+      "Description": "CloudWatch log group for the Telegram bot. Tail via: aws logs tail /braintwin/bot --follow --profile braintwin",
+      "Value": "/braintwin/bot",
+    },
     "SecretsParameterNames73405963": {
       "Description": "SSM SecureString parameters the app reads at boot. Populate BEFORE first M.3 deploy using scripts/put-secrets.sh (or one \`aws ssm put-parameter --type SecureString --name <name> --value <value>\` per param).",
       "Value": "/braintwin/anthropic_key,/braintwin/bearer_token,/braintwin/telegram_token,/braintwin/cloudflare_api_token",
@@ -499,6 +507,32 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
                     },
                     ":kms:us-west-2:123456789012:key/*",
                   ],
+                ],
+              },
+            },
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "ObservabilityAppLogGroupE3B481A7",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "ObservabilityBotLogGroup0E95D559",
+                  "Arn",
                 ],
               },
             },
@@ -981,6 +1015,329 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
         },
       },
       "Type": "AWS::EC2::VPCGatewayAttachment",
+    },
+    "ObservabilityAppLogGroupE3B481A7": {
+      "DeletionPolicy": "Retain",
+      "Properties": {
+        "LogGroupName": "/braintwin/app",
+        "RetentionInDays": 30,
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+      },
+      "Type": "AWS::Logs::LogGroup",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ObservabilityBotLogGroup0E95D559": {
+      "DeletionPolicy": "Retain",
+      "Properties": {
+        "LogGroupName": "/braintwin/bot",
+        "RetentionInDays": 30,
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+      },
+      "Type": "AWS::Logs::LogGroup",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ObservabilityBudget004E6D7C": {
+      "Properties": {
+        "Budget": {
+          "BudgetLimit": {
+            "Amount": 25,
+            "Unit": "USD",
+          },
+          "BudgetName": "BrainTwin-Budget",
+          "BudgetType": "COST",
+          "CostFilters": {
+            "TagKeyValue": [
+              "user:Project$BrainTwin",
+            ],
+          },
+          "TimeUnit": "MONTHLY",
+        },
+        "NotificationsWithSubscribers": [
+          {
+            "Notification": {
+              "ComparisonOperator": "GREATER_THAN",
+              "NotificationType": "FORECASTED",
+              "Threshold": 40,
+              "ThresholdType": "PERCENTAGE",
+            },
+            "Subscribers": [
+              {
+                "Address": "braintwin-alerts-unset@example.invalid",
+                "SubscriptionType": "EMAIL",
+              },
+            ],
+          },
+          {
+            "Notification": {
+              "ComparisonOperator": "GREATER_THAN",
+              "NotificationType": "ACTUAL",
+              "Threshold": 40,
+              "ThresholdType": "PERCENTAGE",
+            },
+            "Subscribers": [
+              {
+                "Address": "braintwin-alerts-unset@example.invalid",
+                "SubscriptionType": "EMAIL",
+              },
+            ],
+          },
+          {
+            "Notification": {
+              "ComparisonOperator": "GREATER_THAN",
+              "NotificationType": "FORECASTED",
+              "Threshold": 60,
+              "ThresholdType": "PERCENTAGE",
+            },
+            "Subscribers": [
+              {
+                "Address": "braintwin-alerts-unset@example.invalid",
+                "SubscriptionType": "EMAIL",
+              },
+            ],
+          },
+          {
+            "Notification": {
+              "ComparisonOperator": "GREATER_THAN",
+              "NotificationType": "ACTUAL",
+              "Threshold": 60,
+              "ThresholdType": "PERCENTAGE",
+            },
+            "Subscribers": [
+              {
+                "Address": "braintwin-alerts-unset@example.invalid",
+                "SubscriptionType": "EMAIL",
+              },
+            ],
+          },
+          {
+            "Notification": {
+              "ComparisonOperator": "GREATER_THAN",
+              "NotificationType": "FORECASTED",
+              "Threshold": 80,
+              "ThresholdType": "PERCENTAGE",
+            },
+            "Subscribers": [
+              {
+                "Address": "braintwin-alerts-unset@example.invalid",
+                "SubscriptionType": "EMAIL",
+              },
+            ],
+          },
+          {
+            "Notification": {
+              "ComparisonOperator": "GREATER_THAN",
+              "NotificationType": "ACTUAL",
+              "Threshold": 80,
+              "ThresholdType": "PERCENTAGE",
+            },
+            "Subscribers": [
+              {
+                "Address": "braintwin-alerts-unset@example.invalid",
+                "SubscriptionType": "EMAIL",
+              },
+            ],
+          },
+          {
+            "Notification": {
+              "ComparisonOperator": "GREATER_THAN",
+              "NotificationType": "FORECASTED",
+              "Threshold": 100,
+              "ThresholdType": "PERCENTAGE",
+            },
+            "Subscribers": [
+              {
+                "Address": "braintwin-alerts-unset@example.invalid",
+                "SubscriptionType": "EMAIL",
+              },
+            ],
+          },
+          {
+            "Notification": {
+              "ComparisonOperator": "GREATER_THAN",
+              "NotificationType": "ACTUAL",
+              "Threshold": 100,
+              "ThresholdType": "PERCENTAGE",
+            },
+            "Subscribers": [
+              {
+                "Address": "braintwin-alerts-unset@example.invalid",
+                "SubscriptionType": "EMAIL",
+              },
+            ],
+          },
+        ],
+      },
+      "Type": "AWS::Budgets::Budget",
+    },
+    "ObservabilityDlmRoleC8FECA3D": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "dlm.amazonaws.com",
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Description": "Lets DLM call EC2 to create/delete EBS snapshots.",
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition",
+                },
+                ":iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole",
+              ],
+            ],
+          },
+        ],
+        "RoleName": "BrainTwin-DLM-Role",
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
+    },
+    "ObservabilityEbsSnapshotPolicyC49EC1D0": {
+      "Properties": {
+        "Description": "BrainTwin-EBS Daily Snapshots",
+        "ExecutionRoleArn": {
+          "Fn::GetAtt": [
+            "ObservabilityDlmRoleC8FECA3D",
+            "Arn",
+          ],
+        },
+        "PolicyDetails": {
+          "PolicyType": "EBS_SNAPSHOT_MANAGEMENT",
+          "ResourceTypes": [
+            "VOLUME",
+          ],
+          "Schedules": [
+            {
+              "CopyTags": true,
+              "CreateRule": {
+                "Interval": 24,
+                "IntervalUnit": "HOURS",
+                "Times": [
+                  "03:00",
+                ],
+              },
+              "Name": "Daily",
+              "RetainRule": {
+                "Count": 7,
+              },
+              "TagsToAdd": [
+                {
+                  "Key": "Name",
+                  "Value": "BrainTwin-EBS-Snapshot",
+                },
+                {
+                  "Key": "Source",
+                  "Value": "DLM",
+                },
+              ],
+            },
+          ],
+          "TargetTags": [
+            {
+              "Key": "Project",
+              "Value": "BrainTwin",
+            },
+          ],
+        },
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "PublicBrand",
+            "Value": "DigitalTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+      },
+      "Type": "AWS::DLM::LifecyclePolicy",
     },
     "StorageAppRepo7969A3A5": {
       "DeletionPolicy": "Delete",
