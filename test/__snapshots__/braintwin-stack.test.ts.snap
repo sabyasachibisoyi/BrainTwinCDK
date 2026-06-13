@@ -1104,7 +1104,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "braintwin-alerts-unset@example.invalid",
+                "Address": "sabya.bisoyi@gmail.com",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1118,7 +1118,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "braintwin-alerts-unset@example.invalid",
+                "Address": "sabya.bisoyi@gmail.com",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1132,7 +1132,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "braintwin-alerts-unset@example.invalid",
+                "Address": "sabya.bisoyi@gmail.com",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1146,7 +1146,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "braintwin-alerts-unset@example.invalid",
+                "Address": "sabya.bisoyi@gmail.com",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1160,7 +1160,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "braintwin-alerts-unset@example.invalid",
+                "Address": "sabya.bisoyi@gmail.com",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1174,7 +1174,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "braintwin-alerts-unset@example.invalid",
+                "Address": "sabya.bisoyi@gmail.com",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1188,7 +1188,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "braintwin-alerts-unset@example.invalid",
+                "Address": "sabya.bisoyi@gmail.com",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1202,7 +1202,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "braintwin-alerts-unset@example.invalid",
+                "Address": "sabya.bisoyi@gmail.com",
                 "SubscriptionType": "EMAIL",
               },
             ],
