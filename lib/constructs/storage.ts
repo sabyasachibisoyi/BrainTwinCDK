@@ -179,7 +179,7 @@ export class StorageConstruct extends Construct {
       value: this.stateBucket.bucketName,
       description:
         "S3 bucket for Litestream WAL, Chroma nightly snapshots, " +
-        "and captured images. RETAIN — survives cdk destroy.",
+        "and captured images. RETAIN - survives cdk destroy.",
     });
 
     // -----------------------------------------------------------------

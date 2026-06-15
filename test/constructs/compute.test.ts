@@ -1,15 +1,21 @@
 /**
- * ComputeConstruct unit tests — Phase 4.0.6 M.2.e.
+ * ComputeConstruct unit tests — Phase 4.0.6 M.2.e + M.3.a.
  *
- * Validates the shape: per-AZ EC2+EBS, RETAIN policy on the data
- * volume, EIP association on the primary, IAM role with the right
- * managed policies, user-data that actually does the EBS mount and
+ * Validates the shape (M.2.e): per-AZ EC2+EBS, RETAIN policy on the
+ * data volume, EIP association on the primary, IAM role with the
+ * right managed policies, user-data that does the EBS mount and
  * UID 10001 ownership.
+ *
+ * Validates the app bring-up (M.3.a): user-data fetches the four
+ * SSM secrets, ECR-logs-in, writes the docker-compose.yml with the
+ * imageTag interpolated, references both CloudWatch log groups via
+ * the awslogs driver, and runs `docker compose up -d`.
  *
  * If any of these assertions break, the next deploy could either
  * (a) be unreachable from Cloudflare, (b) silently lose the corpus
- * on a destroy, or (c) drop SSM access — all of which are real
- * regressions the PR review should catch BEFORE merge.
+ * on a destroy, (c) drop SSM access, (d) leak secrets through a
+ * world-readable env file, or (e) ship to a wrong log group — all of
+ * which are real regressions the PR review should catch BEFORE merge.
  */
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
@@ -232,6 +238,130 @@ describe("ComputeConstruct", () => {
     test("creates /etc/caddy/ for the M.3 Caddyfile + AOP cert", () => {
       const t = Template.fromStack(makeStack());
       expect(userDataAsString(t)).toContain("/etc/caddy");
+    });
+  });
+
+  describe("M.3.a — app bring-up in user-data", () => {
+    function userDataAsString(t: Template): string {
+      return JSON.stringify(t.toJSON());
+    }
+
+    test("fetches each of the four SSM secret parameters with decryption", () => {
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      // The fetch uses `--with-decryption` on each parameter — without
+      // it the SecureString would come back base64'd ciphertext.
+      expect(s).toContain("--with-decryption");
+      expect(s).toContain("/braintwin/anthropic_key");
+      expect(s).toContain("/braintwin/bearer_token");
+      expect(s).toContain("/braintwin/telegram_token");
+      expect(s).toContain("/braintwin/cloudflare_api_token");
+    });
+
+    test("writes secrets.env with mode 0600 and umask 077", () => {
+      // Defence in depth: umask 077 means the heredoc-written file is
+      // 0600 by default; the explicit chmod is belt-and-suspenders. If
+      // someone removes both, the secrets become world-readable.
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("umask 077");
+      expect(s).toContain("chmod 600 /etc/braintwin/secrets.env");
+    });
+
+    test("ECR-logs-in before docker pull", () => {
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      // The `aws ecr get-login-password | docker login` pattern.
+      // Without this, `docker pull` against a private ECR fails with
+      // "no basic auth credentials."
+      expect(s).toContain("aws ecr get-login-password");
+      expect(s).toContain("docker login");
+      expect(s).toContain("--password-stdin");
+    });
+
+    test("docker-compose.yml templates the configured imageTag", () => {
+      // The whole point of M.3 imageTag plumbing — verify it lands in
+      // user-data. The JSON-stringified template escapes inner quotes
+      // (IMAGE_TAG="test-tag" becomes IMAGE_TAG=\"test-tag\"), so
+      // match the two pieces separately rather than the quoted whole.
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("IMAGE_TAG=");
+      expect(s).toContain("test-tag");
+    });
+
+    test("docker-compose.yml references the ECR repo path", () => {
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      // ECR_REPO is assigned from a CDK token (the repo's repositoryName);
+      // we can't grep for the literal value, but we can confirm the
+      // assignment is in there and the heredoc image line uses it.
+      expect(s).toContain('ECR_REPO=');
+      expect(s).toContain("$REGISTRY/$ECR_REPO:$IMAGE_TAG");
+    });
+
+    test("compose binds app on 127.0.0.1:8000 (loopback only — Caddy is M.4)", () => {
+      // Public exposure on :443 lands in M.4 with Caddy. Until then,
+      // smoke-test traffic comes via SSM Session Manager hitting
+      // localhost. A literal "0.0.0.0:8000:8000" on the host would
+      // open the app to anything that can reach the EC2 — a regression
+      // that the Cloudflare-only SG would mostly catch, but defense in
+      // depth.
+      const t = Template.fromStack(makeStack());
+      expect(userDataAsString(t)).toContain("127.0.0.1:8000:8000");
+    });
+
+    test("both services use the awslogs driver pointing at the right log groups", () => {
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      // Driver pinned to awslogs (not the default json-file which
+      // would fill the EBS); each service streams to its own group.
+      expect(s).toContain("driver: awslogs");
+      expect(s).toContain("APP_LOG_GROUP=");
+      expect(s).toContain("BOT_LOG_GROUP=");
+      // The CDK encodes the log group names as tokens, but the bash
+      // var assignment + the heredoc reference should both be present.
+      expect(s).toContain("awslogs-group: $APP_LOG_GROUP");
+      expect(s).toContain("awslogs-group: $BOT_LOG_GROUP");
+    });
+
+    test("bot waits for app to be healthy before starting (depends_on)", () => {
+      // Otherwise the bot's first POST to http://app:8000/capture races
+      // the app's uvicorn startup and burns a retry budget on cold boot.
+      const t = Template.fromStack(makeStack());
+      expect(userDataAsString(t)).toContain("condition: service_healthy");
+    });
+
+    test("ends with `docker compose pull` then `docker compose up -d`", () => {
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("docker compose pull");
+      expect(s).toContain("docker compose up -d");
+    });
+
+    test("hardens both containers: no-new-privileges + cap_drop ALL", () => {
+      // Same hardening as the local docker-compose.yml in BrainTwin.
+      // If anyone drops this from the cloud-side template the
+      // hardening silently regresses.
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("no-new-privileges:true");
+      expect(s).toContain("cap_drop:");
+    });
+
+    test("instance role gets ECR pull, SSM read, S3 RW, and CW log write", () => {
+      // The four grants set up in braintwin-stack.ts AFTER compute is
+      // constructed. Without these, the user-data's aws-cli calls
+      // would all 403 at boot and the EC2 would never start the app.
+      const t = Template.fromStack(makeStack());
+      const policies = t.findResources("AWS::IAM::Policy");
+      const concat = Object.values(policies)
+        .map((p) => JSON.stringify(p.Properties.PolicyDocument))
+        .join("\n");
+      expect(concat).toContain("ecr:BatchGetImage");
+      expect(concat).toContain("ssm:GetParameter");
+      expect(concat).toContain("s3:PutObject");
+      expect(concat).toContain("logs:PutLogEvents");
     });
   });
 
