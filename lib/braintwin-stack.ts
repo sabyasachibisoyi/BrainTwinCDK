@@ -26,10 +26,21 @@ export interface BrainTwinStackProps extends cdk.StackProps {
    * etc.). Look it up via `getConfig(region)` in bin/braintwin.ts.
    */
   readonly config: RegionConfig;
+
+  /**
+   * ECR image tag the EC2 user-data will `docker pull` at boot. Fed in
+   * from `--context imageTag=<tag>` by scripts/deploy.sh. Defaults to
+   * "bootstrap" in bin/braintwin.ts so `cdk synth` works without a
+   * prior image build — but a real deploy with that placeholder will
+   * boot an EC2 that can't pull anything. M.3 compute.ts interpolates
+   * this into the docker-compose user-data template.
+   */
+  readonly imageTag: string;
 }
 
 export class BrainTwinStack extends cdk.Stack {
   public readonly config: RegionConfig;
+  public readonly imageTag: string;
   public readonly network: NetworkConstruct;
   public readonly compute: ComputeConstruct;
   public readonly storage: StorageConstruct;
@@ -39,12 +50,27 @@ export class BrainTwinStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: BrainTwinStackProps) {
     super(scope, id, props);
     this.config = props.config;
+    this.imageTag = props.imageTag;
+
+    // Warn loudly at synth if the operator forgot to set an imageTag.
+    // "bootstrap" is fine for `cdk synth` / unit tests, but deploying
+    // it would boot an EC2 that fails its `docker pull` and so never
+    // serves traffic — the failure mode is loud at runtime but easy to
+    // miss at deploy time. A synth-warning makes it visible up front.
+    if (props.imageTag === "bootstrap") {
+      cdk.Annotations.of(this).addWarning(
+        "imageTag is the placeholder 'bootstrap' — the EC2 user-data " +
+          "will fail to pull a real image. Run BrainTwin/scripts/" +
+          "build-and-push.sh then BrainTwinCDK/scripts/deploy.sh (which " +
+          "passes the real tag via --context imageTag=<tag>) before " +
+          "relying on this deploy.",
+      );
+    }
 
     // Universal tags. Cost Explorer can filter by these to slice spend
-    // per region / phase / brand. Also lets a future ops runbook grep
-    // "all resources for this stack."
+    // per region / phase. Also lets a future ops runbook grep "all
+    // resources for this stack."
     cdk.Tags.of(this).add("Project", "BrainTwin");
-    cdk.Tags.of(this).add("PublicBrand", "DigitalTwin");
     cdk.Tags.of(this).add("Phase", "4.0.6");
     cdk.Tags.of(this).add("Region", props.config.region);
     cdk.Tags.of(this).add("ManagedBy", "BrainTwinCDK");
@@ -96,5 +122,23 @@ export class BrainTwinStack extends cdk.Stack {
       config: this.config,
     });
     this.observability.grantLogWrite(this.compute.instanceRole);
+
+    // Surface the imageTag in CloudFormation outputs so the operator can
+    // confirm scripts/deploy.sh threaded the tag through synth correctly.
+    //
+    // IMPORTANT: as of M.2 this is the *configured* tag only — nothing
+    // consumes it yet. ComputeConstruct does not receive it and the
+    // user-data does not `docker pull`. M.3 will interpolate this tag
+    // into the docker-compose user-data; until then this output does NOT
+    // mean the running EC2 is on this image.
+    new cdk.CfnOutput(this, "ConfiguredImageTag", {
+      value: this.imageTag,
+      description:
+        "ECR tag configured for this stack via --context imageTag=<tag> " +
+        "(handled by BrainTwinCDK/scripts/deploy.sh, which reads " +
+        ".last-deploy-tag written by BrainTwin/scripts/build-and-push.sh). " +
+        "NOTE: not yet wired into the EC2 user-data — M.3 makes the boot " +
+        "`docker pull` use this tag; until then it is configuration only.",
+    });
   }
 }

@@ -15,8 +15,12 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
         "Ref": "ComputeInstance03D945A8C",
       },
     },
+    "ConfiguredImageTag": {
+      "Description": "ECR tag configured for this stack via --context imageTag=<tag> (handled by BrainTwinCDK/scripts/deploy.sh, which reads .last-deploy-tag written by BrainTwin/scripts/build-and-push.sh). NOTE: not yet wired into the EC2 user-data — M.3 makes the boot \`docker pull\` use this tag; until then it is configuration only.",
+      "Value": "test-tag",
+    },
     "NetworkElasticIpAddressCF8BCA7B": {
-      "Description": "Static public IPv4 — set this as the A record for api.digitaltwin.app in Cloudflare (orange-cloud / proxied).",
+      "Description": "Static public IPv4 — set this as the A record for api.braintwin.net in Cloudflare (orange-cloud / proxied).",
       "Value": {
         "Fn::GetAtt": [
           "NetworkElasticIp736301B4",
@@ -143,10 +147,6 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
             "Value": "BrainTwin",
           },
           {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
-          },
-          {
             "Key": "Region",
             "Value": "us-west-2",
           },
@@ -231,10 +231,6 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -359,10 +355,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -653,10 +645,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             "Value": "BrainTwin",
           },
           {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
-          },
-          {
             "Key": "Region",
             "Value": "us-west-2",
           },
@@ -800,10 +788,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             "Value": "BrainTwin",
           },
           {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
-          },
-          {
             "Key": "Region",
             "Value": "us-west-2",
           },
@@ -836,10 +820,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -882,10 +862,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -940,10 +916,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             "Value": "BrainTwin",
           },
           {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
-          },
-          {
             "Key": "Region",
             "Value": "us-west-2",
           },
@@ -972,10 +944,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -1035,10 +1003,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             "Value": "BrainTwin",
           },
           {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
-          },
-          {
             "Key": "Region",
             "Value": "us-west-2",
           },
@@ -1064,10 +1028,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -1104,7 +1064,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1118,7 +1078,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1132,7 +1092,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1146,7 +1106,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1160,7 +1120,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1174,7 +1134,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1188,7 +1148,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1202,7 +1162,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1253,10 +1213,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -1328,10 +1284,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             "Value": "BrainTwin",
           },
           {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
-          },
-          {
             "Key": "Region",
             "Value": "us-west-2",
           },
@@ -1363,10 +1315,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -1453,10 +1401,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",

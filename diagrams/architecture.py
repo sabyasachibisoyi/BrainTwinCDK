@@ -1,17 +1,17 @@
 """
-BrainTwin (public brand: DigitalTwin) — cloud topology source of truth.
+BrainTwin — cloud topology source of truth.
 
 Generates ``architecture.png`` using mingrammer/diagrams. This script IS the
 documentation: edit it, regenerate, commit both the .py and the .png together
 in the same PR. The CI staleness check (Phase 4.0.6.1) reads the file mtimes.
 
-Run:
+Run (from the repo root):
     pip install diagrams        # one-time
     # plus graphviz installed on the OS (brew install graphviz | apt-get install graphviz)
-    python docs/diagrams/architecture.py
+    python diagrams/architecture.py
 
 Output:
-    docs/diagrams/architecture.png
+    diagrams/architecture.png   # written next to this script
 
 Mapping to CDK:
     Each node's variable name (e.g. ``ec2_host``) should match the construct ID
@@ -70,8 +70,8 @@ edge_attr = {
 # ---------------------------------------------------------------------------
 
 with Diagram(
-    "DigitalTwin — Cloud Architecture (Phase 4.0.6)",
-    filename="docs/diagrams/architecture",
+    "BrainTwin — Cloud Architecture (Phase 4.0.6)",
+    filename="diagrams/architecture",
     show=False,
     direction="LR",
     graph_attr=graph_attr,
@@ -84,7 +84,7 @@ with Diagram(
     # External actors
     # -----------------------------------------------------------------------
     with Cluster("Operator devices (Seattle)"):
-        chrome_ext = Client("Chrome extension\n(DigitalTwin v0.5)")
+        chrome_ext = Client("Chrome extension\n(BrainTwin v0.5)")
         tg_mobile = User("Telegram mobile\n(forward articles)")
 
     anthropic_api = Internet("Anthropic API\n(Sonnet + Haiku)")
@@ -93,7 +93,7 @@ with Diagram(
     # Edge / DNS / TLS
     # -----------------------------------------------------------------------
     with Cluster("Edge — Cloudflare (proxied, Full Strict TLS)"):
-        cloudflare = Cloudflare("digitaltwin.app\nDNS + DDoS + TLS")
+        cloudflare = Cloudflare("braintwin.net\nDNS + DDoS + TLS")
 
     # -----------------------------------------------------------------------
     # Compute — single EC2 in us-west-2a

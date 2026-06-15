@@ -18,6 +18,10 @@ cdk.out/
 # AWS credentials (defense in depth — they should live in ~/.aws not here)
 .aws/
 
+# Image-tag state written by scripts/build-and-push.sh and read by
+# scripts/deploy.sh. Local to each operator's machine — not source.
+.last-deploy-tag
+
 # Python (for the diagrams script)
 __pycache__/
 *.pyc

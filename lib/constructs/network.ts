@@ -169,7 +169,7 @@ export class NetworkConstruct extends Construct {
       value: this.elasticIp.attrPublicIp,
       description:
         "Static public IPv4 — set this as the A record for " +
-        "api.digitaltwin.app in Cloudflare (orange-cloud / proxied).",
+        "api.braintwin.net in Cloudflare (orange-cloud / proxied).",
     });
   }
 }

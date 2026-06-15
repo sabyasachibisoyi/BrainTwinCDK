@@ -1,7 +1,7 @@
 {
   "name": "braintwin-cdk",
   "version": "0.1.0",
-  "description": "AWS infrastructure-as-code (CDK TypeScript) for the DigitalTwin product",
+  "description": "AWS infrastructure-as-code (CDK TypeScript) for the BrainTwin product",
   "private": true,
   "bin": {
     "braintwin": "bin/braintwin.js"
