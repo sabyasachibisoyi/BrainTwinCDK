@@ -4,7 +4,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
 {
   "Outputs": {
     "ComputePrimaryEbsVolumeId23E7CFA6": {
-      "Description": "Primary EBS volume ID. RETAIN policy — survives cdk destroy.",
+      "Description": "Primary EBS volume ID. RETAIN policy - survives cdk destroy.",
       "Value": {
         "Ref": "ComputeEbsVolume07C044D41",
       },
@@ -15,8 +15,12 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
         "Ref": "ComputeInstance03D945A8C",
       },
     },
+    "ConfiguredImageTag": {
+      "Description": "ECR tag configured for this stack via --context imageTag=<tag> (handled by BrainTwinCDK/scripts/deploy.sh, which reads .last-deploy-tag written by BrainTwin/scripts/build-and-push.sh). Threaded into the EC2 user-data as of M.3.a so the boot-time \`docker pull\` targets this tag.",
+      "Value": "test-tag",
+    },
     "NetworkElasticIpAddressCF8BCA7B": {
-      "Description": "Static public IPv4 — set this as the A record for api.digitaltwin.app in Cloudflare (orange-cloud / proxied).",
+      "Description": "Static public IPv4 - set this as the A record for api.braintwin.net in Cloudflare (orange-cloud / proxied).",
       "Value": {
         "Fn::GetAtt": [
           "NetworkElasticIp736301B4",
@@ -88,7 +92,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
       },
     },
     "StorageStateBucketNameB4CCE033": {
-      "Description": "S3 bucket for Litestream WAL, Chroma nightly snapshots, and captured images. RETAIN — survives cdk destroy.",
+      "Description": "S3 bucket for Litestream WAL, Chroma nightly snapshots, and captured images. RETAIN - survives cdk destroy.",
       "Value": {
         "Ref": "StorageStateBucket934B7EF1",
       },
@@ -141,10 +145,6 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -233,16 +233,16 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
             "Value": "BrainTwin",
           },
           {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
-          },
-          {
             "Key": "Region",
             "Value": "us-west-2",
           },
         ],
         "UserData": {
-          "Fn::Base64": "#!/bin/bash
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#!/bin/bash
 set -euxo pipefail
 exec > >(tee -a /var/log/braintwin-userdata.log | logger -t braintwin-userdata) 2>&1
 echo '== braintwin user-data starting =='
@@ -251,7 +251,7 @@ apt-get update -y
 apt-get install -y --no-install-recommends \\
   ca-certificates curl gnupg lsb-release jq awscli e2fsprogs
 install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
 echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
 apt-get update -y
 apt-get install -y --no-install-recommends \\
@@ -278,8 +278,140 @@ grep -q "^LABEL=braintwin-data " /etc/fstab || echo "LABEL=braintwin-data /var/l
 mount -a
 chown -R 10001:10001 /var/lib/braintwin/data
 mkdir -p /etc/caddy
+IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+REGION=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+ACCOUNT_ID=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)
+export AWS_DEFAULT_REGION="$REGION"
+echo "Resolved region=$REGION account=$ACCOUNT_ID"
+mkdir -p /etc/braintwin
+chmod 700 /etc/braintwin
+umask 077
+ANTHROPIC_KEY=$(aws ssm get-parameter --name /braintwin/anthropic_key --with-decryption --query Parameter.Value --output text)
+BEARER_TOKEN=$(aws ssm get-parameter --name /braintwin/bearer_token --with-decryption --query Parameter.Value --output text)
+TELEGRAM_TOKEN=$(aws ssm get-parameter --name /braintwin/telegram_token --with-decryption --query Parameter.Value --output text)
+CLOUDFLARE_TOKEN=$(aws ssm get-parameter --name /braintwin/cloudflare_api_token --with-decryption --query Parameter.Value --output text)
+cat > /etc/braintwin/secrets.env <<EOF
+ANTHROPIC_API_KEY=$ANTHROPIC_KEY
+BACKEND_BEARER_TOKEN=$BEARER_TOKEN
+TELEGRAM_BOT_TOKEN=$TELEGRAM_TOKEN
+CLOUDFLARE_API_TOKEN=$CLOUDFLARE_TOKEN
+EOF
+chmod 600 /etc/braintwin/secrets.env
+umask 022
+ECR_REPO="",
+                {
+                  "Ref": "StorageAppRepo7969A3A5",
+                },
+                ""
+REGISTRY="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
+aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+IMAGE_TAG="test-tag"
+APP_LOG_GROUP="",
+                {
+                  "Ref": "ObservabilityAppLogGroupE3B481A7",
+                },
+                ""
+BOT_LOG_GROUP="",
+                {
+                  "Ref": "ObservabilityBotLogGroup0E95D559",
+                },
+                ""
+cat > /etc/braintwin/docker-compose.yml <<COMPOSE_EOF
+# Generated by BrainTwinCDK user-data on first boot. Do NOT edit by
+# hand — re-deploy via BrainTwinCDK/scripts/deploy.sh instead.
+services:
+
+  app:
+    image: $REGISTRY/$ECR_REPO:$IMAGE_TAG
+    container_name: braintwin-app
+    restart: unless-stopped
+    # Hardening — same as the local compose, copied verbatim.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Loopback only. Caddy (M.4) will bind :443 on the host and
+    # reverse-proxy here. Until then, smoke test from inside the
+    # box via SSM Session Manager + curl 127.0.0.1:8000.
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - /etc/braintwin/secrets.env
+    environment:
+      SQLITE_PATH: /data/braintwin.db
+      CHROMA_PATH: /data/chroma
+      IMAGES_PATH: /data/images
+      TELEGRAM_STATE_PATH: /data/telegram_state.json
+      CAPTURE_FAILURES_PATH: /data/capture_failures.jsonl
+      ENRICHMENTS_PATH: /data/enrichments.jsonl
+      HYDRATIONS_PATH: /data/hydrations.jsonl
+      DATABASE_URL: sqlite+aiosqlite:////data/braintwin.db
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: "8000"
+      WHISPER_MODEL_PATH: /data/models/ggml-small.en.bin
+    volumes:
+      # EBS data volume bind-mounted into the container at /data.
+      # Mount point is owned by UID 10001 (braintwin) so the
+      # container's non-root user can write.
+      - /var/lib/braintwin/data:/data
+    logging:
+      # awslogs driver ships container stdout straight to
+      # CloudWatch. Permission comes from the instance role
+      # via observability.grantLogWrite (braintwin-stack.ts).
+      driver: awslogs
+      options:
+        awslogs-region: $REGION
+        awslogs-group: $APP_LOG_GROUP
+        awslogs-stream: app
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  bot:
+    image: $REGISTRY/$ECR_REPO:$IMAGE_TAG
+    container_name: braintwin-bot
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    env_file:
+      - /etc/braintwin/secrets.env
+    environment:
+      BACKEND_CAPTURE_URL: http://app:8000/capture
+      SQLITE_PATH: /data/braintwin.db
+      CHROMA_PATH: /data/chroma
+      IMAGES_PATH: /data/images
+      TELEGRAM_STATE_PATH: /data/telegram_state.json
+      CAPTURE_FAILURES_PATH: /data/capture_failures.jsonl
+      DATABASE_URL: sqlite+aiosqlite:////data/braintwin.db
+      # ALLOWED_TELEGRAM_USER_IDS unset → bot rejects all messages
+      # but DMs the sender their own user ID. To activate, add the
+      # ID to /etc/braintwin/secrets.env and restart the bot.
+    volumes:
+      - /var/lib/braintwin/data:/data
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: $REGION
+        awslogs-group: $BOT_LOG_GROUP
+        awslogs-stream: bot
+    command: ["python", "-m", "backend.telegram_bot.bot"]
+    depends_on:
+      app:
+        condition: service_healthy
+COMPOSE_EOF
+cd /etc/braintwin
+docker compose pull
+docker compose up -d
 echo '== braintwin user-data complete =='
-echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
+docker compose ps",
+              ],
+            ],
+          },
         },
       },
       "Type": "AWS::EC2::Instance",
@@ -319,7 +451,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           ],
           "Version": "2012-10-17",
         },
-        "Description": "BrainTwin EC2 role — SSM Session Manager + CloudWatch agent. ECR pull, S3 state bucket, SSM Parameter Store reads are attached by storage.ts / secrets.ts / observability.ts.",
+        "Description": "BrainTwin EC2 role - SSM Session Manager + CloudWatch agent. ECR pull, S3 state bucket, SSM Parameter Store reads are attached by storage.ts / secrets.ts / observability.ts.",
         "ManagedPolicyArns": [
           {
             "Fn::Join": [
@@ -359,10 +491,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -653,10 +781,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             "Value": "BrainTwin",
           },
           {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
-          },
-          {
             "Key": "Region",
             "Value": "us-west-2",
           },
@@ -666,7 +790,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
     },
     "NetworkSecurityGroup6335DB55": {
       "Properties": {
-        "GroupDescription": "BrainTwin EC2 — allow :443 from Cloudflare only; no :22 (SSH disabled, SSM Session Manager only)",
+        "GroupDescription": "BrainTwin EC2 - allow :443 from Cloudflare only; no :22 (SSH disabled, SSM Session Manager only)",
         "GroupName": "BrainTwin-SG",
         "SecurityGroupEgress": [
           {
@@ -800,10 +924,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             "Value": "BrainTwin",
           },
           {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
-          },
-          {
             "Key": "Region",
             "Value": "us-west-2",
           },
@@ -836,10 +956,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -882,10 +998,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -940,10 +1052,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             "Value": "BrainTwin",
           },
           {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
-          },
-          {
             "Key": "Region",
             "Value": "us-west-2",
           },
@@ -972,10 +1080,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -1035,10 +1139,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             "Value": "BrainTwin",
           },
           {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
-          },
-          {
             "Key": "Region",
             "Value": "us-west-2",
           },
@@ -1064,10 +1164,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -1104,7 +1200,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1118,7 +1214,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1132,7 +1228,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1146,7 +1242,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1160,7 +1256,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1174,7 +1270,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1188,7 +1284,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1202,7 +1298,7 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             },
             "Subscribers": [
               {
-                "Address": "sabya.bisoyi@gmail.com",
+                "Address": "braintwin-alerts-unset@example.invalid",
                 "SubscriptionType": "EMAIL",
               },
             ],
@@ -1253,10 +1349,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -1328,10 +1420,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
             "Value": "BrainTwin",
           },
           {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
-          },
-          {
             "Key": "Region",
             "Value": "us-west-2",
           },
@@ -1363,10 +1451,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",
@@ -1453,10 +1537,6 @@ echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
           {
             "Key": "Project",
             "Value": "BrainTwin",
-          },
-          {
-            "Key": "PublicBrand",
-            "Value": "DigitalTwin",
           },
           {
             "Key": "Region",

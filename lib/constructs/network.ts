@@ -121,7 +121,7 @@ export class NetworkConstruct extends Construct {
       // Acceptable for a single-stack project.
       securityGroupName: brandedName("SG"),
       description:
-        "BrainTwin EC2 — allow :443 from Cloudflare only; " +
+        "BrainTwin EC2 - allow :443 from Cloudflare only; " +
         "no :22 (SSH disabled, SSM Session Manager only)",
       allowAllOutbound: true,
     });
@@ -168,8 +168,8 @@ export class NetworkConstruct extends Construct {
     new cdk.CfnOutput(this, "ElasticIpAddress", {
       value: this.elasticIp.attrPublicIp,
       description:
-        "Static public IPv4 — set this as the A record for " +
-        "api.digitaltwin.app in Cloudflare (orange-cloud / proxied).",
+        "Static public IPv4 - set this as the A record for " +
+        "api.braintwin.net in Cloudflare (orange-cloud / proxied).",
     });
   }
 }

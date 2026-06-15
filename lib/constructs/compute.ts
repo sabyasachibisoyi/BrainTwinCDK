@@ -1,20 +1,23 @@
 /**
- * ComputeConstruct — EC2 + EBS + instance profile + EIP association.
+ * ComputeConstruct — EC2 + EBS + instance profile + EIP association +
+ * full app bring-up.
  *
- * Phase 4.0.6 M.2.e. This is the construct that, when fully wired
- * (with M.2.f storage, M.2.g secrets, and M.3 runtime), actually
- * RUNS the BrainTwin app in the cloud. Today it builds the host shell
- * (compute, persistent disk, IAM access, OS bring-up) and leaves the
- * application bring-up as a TODO for later milestones.
+ * Phase 4.0.6 M.2.e (host + OS) → M.3.a (app bring-up). With the
+ * M.3.a expansion, the user-data is end-to-end: by the time first
+ * boot completes, the EC2 has Docker installed, the EBS data volume
+ * mounted, secrets fetched from SSM, docker-compose.yml written, and
+ * `docker compose up -d` running with both the FastAPI app and the
+ * Telegram bot containers.
  *
  * ## What this construct creates
  *
  *   1. ONE IAM role, shared across all EC2s (CDK auto-creates the
  *      instance profile that wraps it when the role is passed to
  *      `ec2.Instance`).
- *      Today: SSM Session Manager + CloudWatch agent permissions.
- *      M.2.f will attach ECR pull + S3 (state bucket) read/write.
- *      M.2.g will attach SSM Parameter Store read on /braintwin/*.
+ *      Permissions: SSM Session Manager + CloudWatch agent. ECR pull,
+ *      S3 state bucket, SSM Parameter Store reads, and CloudWatch log
+ *      writes are added by storage.ts / secrets.ts / observability.ts
+ *      via `grant*` calls in braintwin-stack.ts.
  *
  *   2. ONE EC2 instance PER AZ in `config.availabilityZones`.
  *      Today that's a length-1 list → one EC2. Adding `'us-west-2b'`
@@ -31,48 +34,71 @@
  *      failover drill, the operator manually reassociates the EIP to
  *      the standby — the Cloudflare DNS A record stays valid.
  *
- *   5. User-data that installs Docker + docker-compose, mounts the EBS
- *      at /var/lib/braintwin/data, and chowns it to UID 10001 so the
- *      container's non-root `braintwin` user can write to it. The
- *      actual `docker compose up` (the part that pulls the image from
- *      ECR and runs the app) is stubbed out — M.3 templates it in
- *      once ECR + SSM Parameters exist.
+ *   5. User-data that:
+ *        a) installs Docker + docker-compose-plugin + AWS CLI,
+ *        b) mounts the EBS at /var/lib/braintwin/data (UID 10001),
+ *        c) fetches the 4 SSM secrets into /etc/braintwin/secrets.env,
+ *        d) ECR-logs-in and writes /etc/braintwin/docker-compose.yml
+ *           with the imageTag, ECR registry, and CloudWatch awslogs
+ *           driver options templated in,
+ *        e) `docker compose pull && docker compose up -d` — app + bot.
  *
  * ## Cloudflare Authenticated Origin Pulls (AOP) — flagged from M.2.d
  *
  * The Security Group filters by Cloudflare's shared egress IPs, which
  * proves the request came through SOME Cloudflare zone, not OUR zone.
  * Caddy needs to validate Cloudflare's per-zone client certificate
- * against Cloudflare's Origin Pull CA. The CA cert is a public PEM
- * published at:
- *   https://developers.cloudflare.com/ssl/origin-configuration/
- *     authenticated-origin-pull/configure/
- *
- * Plan for AOP, sequenced:
- *   M.2.e (this construct) — user-data creates /etc/caddy/ but does
- *       NOT yet deploy the cert (Caddy isn't running).
- *   M.3 (cloud deploy)     — Caddy joins docker-compose. The user-data
- *       fetches Cloudflare's Origin Pull CA at boot and writes it to
- *       /etc/caddy/cloudflare-origin-ca.pem; the Caddyfile is
- *       templated with `tls { client_auth { trust_pool file …pem } }`.
+ * against Cloudflare's Origin Pull CA. M.3.a creates /etc/caddy/ but
+ * Caddy itself + the Origin Pull cert land in M.4 along with the
+ * Cloudflare DNS + ACME wiring.
  *
  * ## Cost note
  *
  * Each EC2 (t4g.small) + 20 GiB gp3 + EIP-while-attached = ~$17/month.
- * Synth-and-don't-deploy is free; `cdk deploy` starts the meter. Hold
- * off on deploy until M.2.h (observability) + M.3 (app actually runs)
- * are wired, otherwise you're paying to have an idle box do nothing.
+ * The added CloudWatch Logs storage from awslogs is bounded by the
+ * 30-day retention set in observability.ts; expect <$2/month for typical
+ * single-user traffic. Synth-and-don't-deploy is free.
  */
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import { Construct } from "constructs";
 import { NetworkConstruct } from "./network";
+import { ObservabilityConstruct } from "./observability";
+import { SecretsConstruct } from "./secrets";
+import { StorageConstruct } from "./storage";
 import { brandedName, RegionConfig } from "../stack-config";
 
 export interface ComputeConstructProps {
   readonly config: RegionConfig;
   readonly network: NetworkConstruct;
+  /**
+   * Storage construct — compute needs the ECR repo name so the
+   * boot-time `docker pull` can target the right registry path.
+   */
+  readonly storage: StorageConstruct;
+  /**
+   * Secrets construct — compute needs the SSM parameter NAMES so the
+   * boot script can fetch the four secrets into /etc/braintwin/secrets.env.
+   * The construct grants `ssm:GetParameter` on the same role separately
+   * in braintwin-stack.ts (it's a method call, not a constructor wiring).
+   */
+  readonly secrets: SecretsConstruct;
+  /**
+   * Observability construct — compute references the two log group
+   * names so the per-service `awslogs` driver in docker-compose ships
+   * container stdout straight to CloudWatch.
+   */
+  readonly observability: ObservabilityConstruct;
+  /**
+   * ECR image tag the user-data will `docker pull` at boot. Threaded
+   * through from `bin/braintwin.ts` (which reads it from
+   * `--context imageTag=<tag>`). Defaults to "bootstrap" upstream — a
+   * deploy with that placeholder will boot an EC2 that fails its pull,
+   * which is the intended fail-loud behaviour for "you forgot to run
+   * build-and-push.sh before deploy.sh."
+   */
+  readonly imageTag: string;
 }
 
 export class ComputeConstruct extends Construct {
@@ -98,8 +124,12 @@ export class ComputeConstruct extends Construct {
     this.instanceRole = new iam.Role(this, "InstanceRole", {
       assumedBy: new iam.ServicePrincipal("ec2.amazonaws.com"),
       roleName: brandedName("EC2-Role"),
+      // IAM role description must be plain hyphen-minus only. IAM
+      // rejects descriptions outside [TAB | LF | CR | U+0020-007E |
+      // U+00A1-00FF]. Em dash (U+2014) falls in the excluded
+      // U+007F-U+00A0 window and hard-fails CFN deploy.
       description:
-        "BrainTwin EC2 role — SSM Session Manager + CloudWatch agent. " +
+        "BrainTwin EC2 role - SSM Session Manager + CloudWatch agent. " +
         "ECR pull, S3 state bucket, SSM Parameter Store reads are " +
         "attached by storage.ts / secrets.ts / observability.ts.",
       managedPolicies: [
@@ -140,7 +170,7 @@ export class ComputeConstruct extends Construct {
     // gets the host into a state where M.3's `docker compose up` will
     // "just work."
     // -----------------------------------------------------------------
-    const userData = this._buildUserData(props.config.ebsSizeGiB);
+    const userData = this._buildUserData(props);
 
     // -----------------------------------------------------------------
     // 4) Per-AZ EC2 + EBS.
@@ -244,29 +274,33 @@ export class ComputeConstruct extends Construct {
     new cdk.CfnOutput(this, "PrimaryEbsVolumeId", {
       value: this.ebsVolumes[0].volumeId,
       description:
-        "Primary EBS volume ID. RETAIN policy — survives cdk destroy.",
+        "Primary EBS volume ID. RETAIN policy - survives cdk destroy.",
     });
   }
 
   /**
    * The bash that runs as root on first boot.
    *
-   * Goals — set the host up to the point where M.3 can ship a
-   * docker-compose file and it Just Runs:
-   *   - apt fresh, Docker installed and enabled
-   *   - The `braintwin` UID 10001 user exists (matches the container
-   *     user from the Dockerfile)
-   *   - EBS mounted at /var/lib/braintwin/data, owned by 10001:10001
-   *   - /etc/caddy/ exists (cert + Caddyfile land here in M.3)
+   * After M.3.a this is end-to-end: by the time the script exits the
+   * EC2 has Docker installed, the EBS data volume mounted, secrets
+   * fetched from SSM, docker-compose.yml written, and `docker compose
+   * up -d` kicked off. SSM Session Manager smoke test is then:
+   *   aws ssm start-session --target i-xxx --profile braintwin
+   *   sudo docker compose -f /etc/braintwin/docker-compose.yml ps
+   *   curl -fsS http://127.0.0.1:8000/health
    *
-   * Things explicitly OUT of scope for M.2.e (deferred to M.3):
-   *   - aws ecr get-login-password (no ECR repo yet — M.2.f)
-   *   - docker compose pull / up (no compose file yet — M.3 templates one)
-   *   - Cloudflare Origin Pull CA cert (Caddy isn't running yet — M.3)
-   *   - Litestream restore (no S3 backup yet — M.4)
+   * Layout of /etc/braintwin/:
+   *   secrets.env        — SSM secrets, mode 0600
+   *   docker-compose.yml — generated, references awslogs driver per service
+   *
+   * Things explicitly OUT of scope (deferred to later milestones):
+   *   - Caddy reverse proxy + Cloudflare Origin Pull CA cert (M.4)
+   *   - Litestream WAL streaming to S3 (M.5)
+   *   - CloudWatch Agent for system metrics (CPU/memory/disk) (M.6)
    */
-  private _buildUserData(ebsSizeGiB: number): ec2.UserData {
+  private _buildUserData(props: ComputeConstructProps): ec2.UserData {
     const ud = ec2.UserData.forLinux();
+    const { config, storage, secrets, observability, imageTag } = props;
 
     ud.addCommands(
       // Strict mode + everything to a log file we can `sudo tail` later
@@ -283,7 +317,10 @@ export class ComputeConstruct extends Construct {
 
       // ----- Docker (from Docker's apt repo, not Ubuntu's older fork) -----
       "install -m 0755 -d /etc/apt/keyrings",
-      "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg",
+      // --yes makes gpg --dearmor non-interactive when the target file
+      // already exists. Without it, re-running user-data (debug or
+      // recovery) prompts "Overwrite? (y/N)" and stalls under sudo.
+      "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg",
       'echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list',
       "apt-get update -y",
       "apt-get install -y --no-install-recommends \\",
@@ -296,7 +333,7 @@ export class ComputeConstruct extends Construct {
       // we suppress via `|| true`.
       // Deliberately NOT in the docker group — docker-socket access is
       // root-equivalent, and this user only exists to own the data
-      // mount. M.3's compose runs via root/systemd.
+      // mount. The compose runs via root/systemd.
       "id -u braintwin >/dev/null 2>&1 || useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin braintwin",
 
       // ----- Find and mount the EBS data volume -----
@@ -304,7 +341,7 @@ export class ComputeConstruct extends Construct {
       // (slot order). We match by SIZE so we don't care about device name.
       // Interpolated from config so a future size bump can't silently
       // desync from the lsblk size-match below.
-      `EBS_SIZE_GIB=${ebsSizeGiB}`,
+      `EBS_SIZE_GIB=${config.ebsSizeGiB}`,
       "for i in $(seq 1 60); do",
       '  EBS_DEV=$(lsblk -dpno NAME,SIZE,TYPE | awk -v sz="${EBS_SIZE_GIB}G" \'$2==sz && $3=="disk" {print $1; exit}\')',
       '  [ -n "$EBS_DEV" ] && break',
@@ -332,12 +369,168 @@ export class ComputeConstruct extends Construct {
       // (UID 10001 in the Dockerfile) can read/write.
       "chown -R 10001:10001 /var/lib/braintwin/data",
 
-      // ----- Caddy directory (cert + Caddyfile land here in M.3) -----
+      // ----- Caddy directory (cert + Caddyfile land here in M.4) -----
       "mkdir -p /etc/caddy",
+
+      // =================================================================
+      // M.3.a additions — app bring-up
+      // =================================================================
+      //
+      // From here down: resolve instance metadata, fetch secrets, ECR
+      // login, write docker-compose.yml, pull image, `docker compose up`.
+
+      // ----- Resolve account + region from IMDSv2 -----
+      // We can't hardcode REGION as a CDK token because the same compute
+      // construct deploys per-region (us-west-2 today, ap-south-1 later
+      // per stack-config.ts). The account ID is similarly needed to
+      // build the ECR registry hostname. IMDSv2 (token-required) is
+      // already enforced on the instance (requireImdsv2:true above).
+      'IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")',
+      'REGION=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)',
+      'ACCOUNT_ID=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)',
+      'export AWS_DEFAULT_REGION="$REGION"',
+      'echo "Resolved region=$REGION account=$ACCOUNT_ID"',
+
+      // ----- Fetch SSM secrets into /etc/braintwin/secrets.env -----
+      // umask 077 → cat heredoc writes mode 0600 by default; we chmod
+      // explicitly after as belt-and-suspenders. /etc/braintwin/ itself
+      // is 0700 so non-root can't even list the secrets file.
+      "mkdir -p /etc/braintwin",
+      "chmod 700 /etc/braintwin",
+      "umask 077",
+      `ANTHROPIC_KEY=$(aws ssm get-parameter --name ${secrets.anthropicKeyName} --with-decryption --query Parameter.Value --output text)`,
+      `BEARER_TOKEN=$(aws ssm get-parameter --name ${secrets.bearerTokenName} --with-decryption --query Parameter.Value --output text)`,
+      `TELEGRAM_TOKEN=$(aws ssm get-parameter --name ${secrets.telegramTokenName} --with-decryption --query Parameter.Value --output text)`,
+      `CLOUDFLARE_TOKEN=$(aws ssm get-parameter --name ${secrets.cloudflareApiTokenName} --with-decryption --query Parameter.Value --output text)`,
+
+      // Heredoc writes the env file. Bash expands $VAR-style references
+      // INSIDE the unquoted EOF; that's what we want — the values were
+      // resolved by the aws-cli calls above.
+      "cat > /etc/braintwin/secrets.env <<EOF",
+      "ANTHROPIC_API_KEY=$ANTHROPIC_KEY",
+      "BACKEND_BEARER_TOKEN=$BEARER_TOKEN",
+      "TELEGRAM_BOT_TOKEN=$TELEGRAM_TOKEN",
+      "CLOUDFLARE_API_TOKEN=$CLOUDFLARE_TOKEN",
+      "EOF",
+      "chmod 600 /etc/braintwin/secrets.env",
+      "umask 022",
+
+      // ----- ECR login -----
+      // Token is good for 12h. The boot is one-shot, so re-login on
+      // image refresh requires a redeploy — fine for M.3, automated
+      // pull-and-restart is a Phase 4.0.6.1 concern.
+      `ECR_REPO="${storage.appRepo.repositoryName}"`,
+      'REGISTRY="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"',
+      'aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"',
+
+      // ----- Write docker-compose.yml -----
+      // CDK substitutes ${imageTag} and ${...logGroupName} at synth time
+      // (those are TypeScript template literals reaching CDK tokens).
+      // The $-prefixed bash vars ($REGISTRY, $ECR_REPO, $REGION, etc.)
+      // are expanded by bash when the heredoc fires. Don't quote the
+      // EOF terminator — we WANT bash to expand $-vars on this side.
+      `IMAGE_TAG="${imageTag}"`,
+      `APP_LOG_GROUP="${observability.appLogGroup.logGroupName}"`,
+      `BOT_LOG_GROUP="${observability.botLogGroup.logGroupName}"`,
+      "cat > /etc/braintwin/docker-compose.yml <<COMPOSE_EOF",
+      "# Generated by BrainTwinCDK user-data on first boot. Do NOT edit by",
+      "# hand — re-deploy via BrainTwinCDK/scripts/deploy.sh instead.",
+      "services:",
+      "",
+      "  app:",
+      "    image: $REGISTRY/$ECR_REPO:$IMAGE_TAG",
+      "    container_name: braintwin-app",
+      "    restart: unless-stopped",
+      "    # Hardening — same as the local compose, copied verbatim.",
+      "    security_opt:",
+      "      - no-new-privileges:true",
+      "    cap_drop:",
+      "      - ALL",
+      "    # Loopback only. Caddy (M.4) will bind :443 on the host and",
+      "    # reverse-proxy here. Until then, smoke test from inside the",
+      "    # box via SSM Session Manager + curl 127.0.0.1:8000.",
+      "    ports:",
+      '      - "127.0.0.1:8000:8000"',
+      "    env_file:",
+      "      - /etc/braintwin/secrets.env",
+      "    environment:",
+      "      SQLITE_PATH: /data/braintwin.db",
+      "      CHROMA_PATH: /data/chroma",
+      "      IMAGES_PATH: /data/images",
+      "      TELEGRAM_STATE_PATH: /data/telegram_state.json",
+      "      CAPTURE_FAILURES_PATH: /data/capture_failures.jsonl",
+      "      ENRICHMENTS_PATH: /data/enrichments.jsonl",
+      "      HYDRATIONS_PATH: /data/hydrations.jsonl",
+      "      DATABASE_URL: sqlite+aiosqlite:////data/braintwin.db",
+      "      BACKEND_HOST: 0.0.0.0",
+      '      BACKEND_PORT: "8000"',
+      "      WHISPER_MODEL_PATH: /data/models/ggml-small.en.bin",
+      "    volumes:",
+      "      # EBS data volume bind-mounted into the container at /data.",
+      "      # Mount point is owned by UID 10001 (braintwin) so the",
+      "      # container's non-root user can write.",
+      "      - /var/lib/braintwin/data:/data",
+      "    logging:",
+      "      # awslogs driver ships container stdout straight to",
+      "      # CloudWatch. Permission comes from the instance role",
+      "      # via observability.grantLogWrite (braintwin-stack.ts).",
+      "      driver: awslogs",
+      "      options:",
+      "        awslogs-region: $REGION",
+      "        awslogs-group: $APP_LOG_GROUP",
+      "        awslogs-stream: app",
+      "    healthcheck:",
+      '      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]',
+      "      interval: 30s",
+      "      timeout: 5s",
+      "      start_period: 60s",
+      "      retries: 3",
+      "",
+      "  bot:",
+      "    image: $REGISTRY/$ECR_REPO:$IMAGE_TAG",
+      "    container_name: braintwin-bot",
+      "    restart: unless-stopped",
+      "    security_opt:",
+      "      - no-new-privileges:true",
+      "    cap_drop:",
+      "      - ALL",
+      "    env_file:",
+      "      - /etc/braintwin/secrets.env",
+      "    environment:",
+      "      BACKEND_CAPTURE_URL: http://app:8000/capture",
+      "      SQLITE_PATH: /data/braintwin.db",
+      "      CHROMA_PATH: /data/chroma",
+      "      IMAGES_PATH: /data/images",
+      "      TELEGRAM_STATE_PATH: /data/telegram_state.json",
+      "      CAPTURE_FAILURES_PATH: /data/capture_failures.jsonl",
+      "      DATABASE_URL: sqlite+aiosqlite:////data/braintwin.db",
+      "      # ALLOWED_TELEGRAM_USER_IDS unset → bot rejects all messages",
+      "      # but DMs the sender their own user ID. To activate, add the",
+      "      # ID to /etc/braintwin/secrets.env and restart the bot.",
+      "    volumes:",
+      "      - /var/lib/braintwin/data:/data",
+      "    logging:",
+      "      driver: awslogs",
+      "      options:",
+      "        awslogs-region: $REGION",
+      "        awslogs-group: $BOT_LOG_GROUP",
+      "        awslogs-stream: bot",
+      '    command: ["python", "-m", "backend.telegram_bot.bot"]',
+      "    depends_on:",
+      "      app:",
+      "        condition: service_healthy",
+      "COMPOSE_EOF",
+
+      // ----- Pull image + start containers -----
+      // -d so the user-data script exits cleanly; docker keeps the
+      // containers running under its systemd unit.
+      "cd /etc/braintwin",
+      "docker compose pull",
+      "docker compose up -d",
 
       // ----- Done -----
       "echo '== braintwin user-data complete =='",
-      "echo '== awaiting M.2.f (ECR + S3) and M.3 (docker compose up) ==' ",
+      "docker compose ps",
     );
 
     return ud;

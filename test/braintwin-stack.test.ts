@@ -23,6 +23,9 @@ describe("BrainTwinStack — us-west-2 (M.2.b/c scaffold)", () => {
     return new BrainTwinStack(app, "TestBrainTwinStack-us-west-2", {
       env: { account: "123456789012", region: "us-west-2" },
       config: getConfig("us-west-2"),
+      // Deterministic literal keeps the snapshot stable; real deploys
+      // feed the value in via --context imageTag=<tag>.
+      imageTag: "test-tag",
     });
   }
 

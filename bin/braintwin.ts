@@ -32,13 +32,25 @@ const app = new cdk.App();
 const region = (app.node.tryGetContext("region") as string) ?? "us-west-2";
 const config = getConfig(region);
 
+// Image tag the EC2 user-data will `docker pull` at boot. Default
+// "bootstrap" is a synth-safe placeholder so `cdk synth` works without
+// having to run build-and-push first. Real deploys must override:
+//   ../BrainTwin/scripts/build-and-push.sh writes the chosen tag to
+//     this repo's .last-deploy-tag (it reaches sideways once),
+//   scripts/deploy.sh reads it and passes --context imageTag=<tag>.
+// ECR is configured with IMMUTABLE tags (storage.ts), so each push is
+// a distinct unique tag (snapshot-<git-sha> or v<MAJOR>.<MINOR>.<PATCH>).
+const imageTag =
+  (app.node.tryGetContext("imageTag") as string) ?? "bootstrap";
+
 new BrainTwinStack(app, `BrainTwinStack-${region}`, {
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region,
   },
   config,
-  description: `DigitalTwin / BrainTwin stack — ${region} — Phase 4.0.6 M.2.b/c scaffold`,
+  imageTag,
+  description: `BrainTwin stack — ${region} — Phase 4.0.6 M.2.b/c scaffold`,
 });
 
 app.synth();

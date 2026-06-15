@@ -1,17 +1,17 @@
 # BrainTwinCDK
 
-Infrastructure-as-code for the **DigitalTwin** product (codename: BrainTwin).
+Infrastructure-as-code for the **BrainTwin** product.
 
 This repo holds the AWS CDK TypeScript stack and the cloud topology
 diagrams. The application code (FastAPI backend, Chrome extension,
 Telegram bot) lives in the companion repo at
 **[sabyasachibisoyi/BrainTwin](https://github.com/sabyasachibisoyi/BrainTwin)**.
 
-> **Naming:** Codename is **BrainTwin** (used for repo, IAM role names,
-> stack names, S3 buckets). Public product brand is **DigitalTwin**
-> (used in customer-facing UI, the domain `digitaltwin.app`, and docs).
-> See [BrainTwin/docs/phase4.0.6-deployment-design.md §11](https://github.com/sabyasachibisoyi/BrainTwin/blob/main/docs/phase4.0.6-deployment-design.md)
-> for the split.
+> **Naming:** The product is **BrainTwin** everywhere — repo, IAM role
+> names, stack names, S3 buckets, customer-facing UI, and the public
+> domain `braintwin.net`. An earlier design considered a "DigitalTwin"
+> public-brand split; the trade-offs are recorded in
+> [BrainTwin/docs/phase4.0.6-deployment-design.md §11](https://github.com/sabyasachibisoyi/BrainTwin/blob/main/docs/phase4.0.6-deployment-design.md).
 
 ---
 

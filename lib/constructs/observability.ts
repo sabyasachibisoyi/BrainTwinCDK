@@ -128,7 +128,7 @@ export class ObservabilityConstruct extends Construct {
     const email = configuredEmail || "braintwin-alerts-unset@example.invalid";
     if (!configuredEmail) {
       cdk.Annotations.of(this).addWarning(
-        "BRAINTWIN_ALERT_EMAIL is not set — budget alerts will be sent to a " +
+        "BRAINTWIN_ALERT_EMAIL is not set - budget alerts will be sent to a " +
           "placeholder (@example.invalid) address that goes nowhere. Set the " +
           "env var and redeploy before relying on cost alerts.",
       );

@@ -26,6 +26,7 @@ function makeStack(): cdk.Stack {
   return new BrainTwinStack(app, "TestStack-us-west-2", {
     env: { account: "123456789012", region: "us-west-2" },
     config: getConfig("us-west-2"),
+    imageTag: "test-tag",
   });
 }
 
