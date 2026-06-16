@@ -182,15 +182,21 @@ if [[ -z "$INSTANCE_IDS" ]]; then
   exit 0
 fi
 
-# send-command can fail if the instance isn't SSM-registered yet (e.g. a
-# brand-new box still booting — which already runs the refresh from its
-# user-data anyway). Treat a send failure as non-fatal and tell the
-# operator how to re-run it by hand.
+# The command first `cloud-init status --wait`s. On a freshly replaced box
+# the SSM agent registers early in boot — before user-data has written the
+# refresh script — so a naked call would hit "not found" (127). Waiting for
+# cloud-init returns immediately on a steady-state box, and on a fresh boot
+# blocks until user-data (which already ran the refresh once) finishes; the
+# subsequent run is then an idempotent no-op. The `test -x` guard turns a
+# genuinely missing script into a clear message instead of a bare 127.
+#
+# send-command itself can still fail if the instance isn't SSM-registered
+# yet; treat that as non-fatal and print the manual re-run.
 if ! CMD_ID=$(aws ssm send-command \
   --document-name "AWS-RunShellScript" \
   --instance-ids $INSTANCE_IDS \
   --comment "BrainTwin in-place image refresh (deploy.sh)" \
-  --parameters 'commands=["/usr/local/bin/braintwin-refresh.sh"]' \
+  --parameters 'commands=["cloud-init status --wait >/dev/null 2>&1 || true","test -x /usr/local/bin/braintwin-refresh.sh || { echo refresh-script-not-found; exit 1; }","/usr/local/bin/braintwin-refresh.sh"]' \
   --profile "$AWS_PROFILE" --region "$REGION" \
   --query "Command.CommandId" --output text 2>/dev/null); then
   echo "    WARNING: could not send the SSM refresh command." >&2
@@ -204,15 +210,35 @@ if ! CMD_ID=$(aws ssm send-command \
 fi
 
 echo "    Sent command $CMD_ID to: $INSTANCE_IDS"
+# Poll for up to 7 minutes. The built-in `ssm wait command-executed` waiter
+# tops out around 100s, which is too short when the command is blocked on a
+# fresh box's `cloud-init status --wait` (full first boot can take minutes).
 for id in $INSTANCE_IDS; do
-  echo "    Waiting for refresh on $id..."
-  if aws ssm wait command-executed \
-    --command-id "$CMD_ID" --instance-id "$id" \
-    --profile "$AWS_PROFILE" --region "$REGION" 2>/dev/null; then
-    echo "    OK: $id refreshed to imageTag=$TAG caddyImageTag=$CADDY_TAG"
-  else
-    echo "    WARNING: refresh on $id did not reach Success. Inspect with:" >&2
-    echo "      aws ssm get-command-invocation --command-id $CMD_ID \\" >&2
-    echo "        --instance-id $id --profile $AWS_PROFILE --region $REGION" >&2
-  fi
+  echo "    Waiting for refresh on $id (up to 7 min)..."
+  deadline=$((SECONDS + 420))
+  while true; do
+    status=$(aws ssm get-command-invocation \
+      --command-id "$CMD_ID" --instance-id "$id" \
+      --profile "$AWS_PROFILE" --region "$REGION" \
+      --query "Status" --output text 2>/dev/null || echo "Pending")
+    case "$status" in
+      Success)
+        echo "    OK: $id refreshed to imageTag=$TAG caddyImageTag=$CADDY_TAG"
+        break
+        ;;
+      Failed | Cancelled | TimedOut)
+        echo "    WARNING: refresh on $id ended in $status. Inspect with:" >&2
+        echo "      aws ssm get-command-invocation --command-id $CMD_ID \\" >&2
+        echo "        --instance-id $id --profile $AWS_PROFILE --region $REGION" >&2
+        break
+        ;;
+      *)
+        if (( SECONDS >= deadline )); then
+          echo "    WARNING: refresh on $id still '$status' after 7 min; check manually." >&2
+          break
+        fi
+        sleep 10
+        ;;
+    esac
+  done
 done
