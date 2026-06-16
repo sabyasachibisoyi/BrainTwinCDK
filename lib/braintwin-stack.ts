@@ -175,31 +175,26 @@ export class BrainTwinStack extends cdk.Stack {
     // uses these to ship container stdout to CloudWatch.
     this.observability.grantLogWrite(this.compute.instanceRole);
 
-    // Surface the imageTag in CloudFormation outputs so the operator can
-    // confirm scripts/deploy.sh threaded the tag through synth correctly.
-    //
-    // IMPORTANT: as of M.2 this is the *configured* tag only — nothing
-    // consumes it yet. ComputeConstruct does not receive it and the
-    // user-data does not `docker pull`. M.3 will interpolate this tag
-    // into the docker-compose user-data; until then this output does NOT
-    // mean the running EC2 is on this image.
+    // Surface the configured tags in CloudFormation outputs. The value
+    // is also written to the /braintwin/image_tag + /braintwin/caddy_image_tag
+    // SSM parameters (see compute.ts), which is what the EC2 actually
+    // reads at boot and on each in-place refresh. deploy.sh triggers that
+    // refresh after the stack update, so once it finishes these outputs
+    // do reflect the running images.
     new cdk.CfnOutput(this, "ConfiguredImageTag", {
       value: this.imageTag,
       description:
-        "ECR tag configured for this stack via --context imageTag=<tag> " +
-        "(handled by BrainTwinCDK/scripts/deploy.sh, which reads " +
-        ".last-deploy-tag written by BrainTwin/scripts/build-and-push.sh). " +
-        "Threaded into the EC2 user-data as of M.3.a so the boot-time " +
-        "`docker pull` targets this tag.",
+        "ECR app tag configured via --context imageTag=<tag> " +
+        "(BrainTwinCDK/scripts/deploy.sh reads .last-deploy-tag). Published " +
+        "to SSM /braintwin/image_tag; the EC2 reads it on boot + refresh.",
     });
 
     new cdk.CfnOutput(this, "ConfiguredCaddyImageTag", {
       value: this.caddyImageTag,
       description:
-        "ECR tag for the custom Caddy image (M.4.a). Threaded through " +
-        "--context caddyImageTag=<tag> from BrainTwinCDK/scripts/deploy.sh " +
-        "(which reads .last-deploy-caddy-tag written by " +
-        "BrainTwin/scripts/build-and-push-caddy.sh).",
+        "ECR Caddy tag configured via --context caddyImageTag=<tag> " +
+        "(deploy.sh reads .last-deploy-caddy-tag). Published to SSM " +
+        "/braintwin/caddy_image_tag; the EC2 reads it on boot + refresh.",
     });
   }
 }

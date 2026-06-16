@@ -247,6 +247,16 @@ describe("ComputeConstruct", () => {
       return JSON.stringify(t.toJSON());
     }
 
+    // Just the EC2 user-data (not the whole template), so we can assert a
+    // value is ABSENT from the boot script even when it legitimately
+    // appears elsewhere in the template — e.g. as an SSM parameter value.
+    function userDataOnly(t: Template): string {
+      const instances = t.findResources("AWS::EC2::Instance");
+      return Object.values(instances)
+        .map((r) => JSON.stringify(r.Properties.UserData))
+        .join("\n");
+    }
+
     test("fetches each of the four SSM secret parameters with decryption", () => {
       const t = Template.fromStack(makeStack());
       const s = userDataAsString(t);
@@ -280,15 +290,33 @@ describe("ComputeConstruct", () => {
       expect(s).toContain("--password-stdin");
     });
 
-    test("docker-compose.yml templates the configured imageTag", () => {
-      // The whole point of M.3 imageTag plumbing — verify it lands in
-      // user-data. The JSON-stringified template escapes inner quotes
-      // (IMAGE_TAG="test-tag" becomes IMAGE_TAG=\"test-tag\"), so
-      // match the two pieces separately rather than the quoted whole.
+    test("publishes imageTag to SSM and does NOT bake it into user-data", () => {
+      // Option A: the tag lives in an SSM parameter and is read at runtime
+      // by the refresh script. That decoupling is what stops an image bump
+      // from rewriting user-data (which would replace the instance and
+      // deadlock on the single RETAIN EBS volume).
       const t = Template.fromStack(makeStack());
-      const s = userDataAsString(t);
-      expect(s).toContain("IMAGE_TAG=");
-      expect(s).toContain("test-tag");
+      t.hasResourceProperties("AWS::SSM::Parameter", {
+        Name: "/braintwin/image_tag",
+        Type: "String",
+        Value: "test-tag",
+      });
+      // user-data reads the parameter by NAME at runtime; the literal tag
+      // value must NOT appear in the boot script.
+      const ud = userDataOnly(t);
+      expect(ud).toContain("/braintwin/image_tag");
+      expect(ud).toContain("aws ssm get-parameter");
+      expect(ud).not.toContain("test-tag");
+    });
+
+    test("writes a reusable refresh script that deploy.sh re-runs over SSM", () => {
+      // The script is the mechanism that makes image bumps in-place:
+      // deploy.sh sends `braintwin-refresh.sh` via SSM RunCommand instead
+      // of replacing the box.
+      const ud = userDataOnly(Template.fromStack(makeStack()));
+      expect(ud).toContain("/usr/local/bin/braintwin-refresh.sh");
+      expect(ud).toContain("docker compose pull");
+      expect(ud).toContain("docker compose up -d");
     });
 
     test("docker-compose.yml references the ECR repo path", () => {
@@ -371,6 +399,13 @@ describe("ComputeConstruct", () => {
       return JSON.stringify(t.toJSON());
     }
 
+    function userDataOnly(t: Template): string {
+      const instances = t.findResources("AWS::EC2::Instance");
+      return Object.values(instances)
+        .map((r) => JSON.stringify(r.Properties.UserData))
+        .join("\n");
+    }
+
     test("downloads the Cloudflare Origin Pull CA cert at boot (for AOP)", () => {
       // Without the CA cert pre-loaded, Caddy's client_auth block
       // can't validate Cloudflare's per-zone client cert. The cert
@@ -393,14 +428,20 @@ describe("ComputeConstruct", () => {
       expect(s).toContain("/var/lib/braintwin/data/caddy/config");
     });
 
-    test("docker-compose includes the caddy service with both image tags", () => {
+    test("docker-compose includes the caddy service; caddy tag lives in SSM", () => {
       const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::SSM::Parameter", {
+        Name: "/braintwin/caddy_image_tag",
+        Type: "String",
+        Value: "test-caddy-tag",
+      });
       const s = userDataAsString(t);
       expect(s).toContain("CADDY_IMAGE_TAG=");
-      expect(s).toContain("test-caddy-tag");
       // The compose image: line references $CADDY_REPO and $CADDY_IMAGE_TAG.
       expect(s).toContain("$REGISTRY/$CADDY_REPO:$CADDY_IMAGE_TAG");
       expect(s).toContain("braintwin-caddy");
+      // Tag value is not baked into the boot script.
+      expect(userDataOnly(t)).not.toContain("test-caddy-tag");
     });
 
     test("caddy binds host :80 AND :443 (public TLS edge)", () => {

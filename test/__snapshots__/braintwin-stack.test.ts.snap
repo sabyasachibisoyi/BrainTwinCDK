@@ -12,15 +12,15 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
     "ComputePrimaryInstanceId5A264371": {
       "Description": "Primary EC2 instance ID. Use with \`aws ssm start-session --target <id>\` to get a shell on the box (no SSH).",
       "Value": {
-        "Ref": "ComputeInstance03D945A8C226300e2356312bb",
+        "Ref": "ComputeInstance03D945A8C7894c017c6d7e0d8",
       },
     },
     "ConfiguredCaddyImageTag": {
-      "Description": "ECR tag for the custom Caddy image (M.4.a). Threaded through --context caddyImageTag=<tag> from BrainTwinCDK/scripts/deploy.sh (which reads .last-deploy-caddy-tag written by BrainTwin/scripts/build-and-push-caddy.sh).",
+      "Description": "ECR Caddy tag configured via --context caddyImageTag=<tag> (deploy.sh reads .last-deploy-caddy-tag). Published to SSM /braintwin/caddy_image_tag; the EC2 reads it on boot + refresh.",
       "Value": "test-caddy-tag",
     },
     "ConfiguredImageTag": {
-      "Description": "ECR tag configured for this stack via --context imageTag=<tag> (handled by BrainTwinCDK/scripts/deploy.sh, which reads .last-deploy-tag written by BrainTwin/scripts/build-and-push.sh). Threaded into the EC2 user-data as of M.3.a so the boot-time \`docker pull\` targets this tag.",
+      "Description": "ECR app tag configured via --context imageTag=<tag> (BrainTwinCDK/scripts/deploy.sh reads .last-deploy-tag). Published to SSM /braintwin/image_tag; the EC2 reads it on boot + refresh.",
       "Value": "test-tag",
     },
     "NetworkElasticIpAddressCF8BCA7B": {
@@ -169,11 +169,26 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
     },
   },
   "Resources": {
+    "ComputeCaddyImageTagParam02F625DC": {
+      "Properties": {
+        "Description": "ECR Caddy image tag the EC2 runs. Updated by scripts/deploy.sh; read at boot and on each SSM-triggered refresh.",
+        "Name": "/braintwin/caddy_image_tag",
+        "Tags": {
+          "ManagedBy": "BrainTwinCDK",
+          "Phase": "4.0.6",
+          "Project": "BrainTwin",
+          "Region": "us-west-2",
+        },
+        "Type": "String",
+        "Value": "test-caddy-tag",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
     "ComputeEbsAttachment09427EA70": {
       "Properties": {
         "Device": "/dev/sdf",
         "InstanceId": {
-          "Ref": "ComputeInstance03D945A8C226300e2356312bb",
+          "Ref": "ComputeInstance03D945A8C7894c017c6d7e0d8",
         },
         "VolumeId": {
           "Ref": "ComputeEbsVolume07C044D41",
@@ -224,13 +239,30 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
           ],
         },
         "InstanceId": {
-          "Ref": "ComputeInstance03D945A8C226300e2356312bb",
+          "Ref": "ComputeInstance03D945A8C7894c017c6d7e0d8",
         },
       },
       "Type": "AWS::EC2::EIPAssociation",
     },
-    "ComputeInstance03D945A8C226300e2356312bb": {
+    "ComputeImageTagParam76ECD74D": {
+      "Properties": {
+        "Description": "ECR app image tag the EC2 runs. Updated by scripts/deploy.sh; read at boot and on each SSM-triggered refresh.",
+        "Name": "/braintwin/image_tag",
+        "Tags": {
+          "ManagedBy": "BrainTwinCDK",
+          "Phase": "4.0.6",
+          "Project": "BrainTwin",
+          "Region": "us-west-2",
+        },
+        "Type": "String",
+        "Value": "test-tag",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "ComputeInstance03D945A8C7894c017c6d7e0d8": {
       "DependsOn": [
+        "ComputeCaddyImageTagParam02F625DC",
+        "ComputeImageTagParam76ECD74D",
         "ComputeInstanceRoleDefaultPolicyBD7127B5",
         "ComputeInstanceRoleC860B428",
       ],
@@ -367,6 +399,17 @@ CLOUDFLARE_API_TOKEN=$CLOUDFLARE_TOKEN
 EOF
 chmod 600 /etc/braintwin/secrets.env
 umask 022
+cat > /usr/local/bin/braintwin-refresh.sh <<'BRAINTWIN_REFRESH_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo '== braintwin-refresh: regenerating compose from SSM image tags =='
+IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+REGION=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+ACCOUNT_ID=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)
+export AWS_DEFAULT_REGION="$REGION"
+IMAGE_TAG=$(aws ssm get-parameter --name /braintwin/image_tag --query Parameter.Value --output text)
+CADDY_IMAGE_TAG=$(aws ssm get-parameter --name /braintwin/caddy_image_tag --query Parameter.Value --output text)
+echo "Resolved image_tag=$IMAGE_TAG caddy_image_tag=$CADDY_IMAGE_TAG"
 ECR_REPO="",
                 {
                   "Ref": "StorageAppRepo7969A3A5",
@@ -378,9 +421,6 @@ CADDY_REPO="",
                 },
                 ""
 REGISTRY="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
-aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-IMAGE_TAG="test-tag"
-CADDY_IMAGE_TAG="test-caddy-tag"
 APP_LOG_GROUP="",
                 {
                   "Ref": "ObservabilityAppLogGroupE3B481A7",
@@ -396,6 +436,7 @@ CADDY_LOG_GROUP="",
                   "Ref": "ObservabilityCaddyLogGroupD9AB6A02",
                 },
                 ""
+aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 cat > /etc/braintwin/docker-compose.yml <<COMPOSE_EOF
 # Generated by BrainTwinCDK user-data on first boot. Do NOT edit by
 # hand — re-deploy via BrainTwinCDK/scripts/deploy.sh instead.
@@ -535,6 +576,14 @@ services:
       app:
         condition: service_healthy
 COMPOSE_EOF
+
+cd /etc/braintwin
+docker compose pull
+docker compose up -d
+docker compose ps
+echo '== braintwin-refresh: done =='
+BRAINTWIN_REFRESH_EOF
+chmod 0755 /usr/local/bin/braintwin-refresh.sh
 cat > /etc/braintwin/Caddyfile <<'CADDYFILE_EOF'
 # Generated by BrainTwinCDK user-data on first boot. Do NOT edit by
 # hand - re-deploy via BrainTwinCDK/scripts/deploy.sh instead.
@@ -575,11 +624,8 @@ api.braintwin.net {
 	header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
 }
 CADDYFILE_EOF
-cd /etc/braintwin
-docker compose pull
-docker compose up -d
-echo '== braintwin user-data complete =='
-docker compose ps",
+/usr/local/bin/braintwin-refresh.sh
+echo '== braintwin user-data complete =='",
               ],
             ],
           },
@@ -588,6 +634,10 @@ docker compose ps",
       "Type": "AWS::EC2::Instance",
     },
     "ComputeInstance0InstanceProfileEC28C8A2": {
+      "DependsOn": [
+        "ComputeCaddyImageTagParam02F625DC",
+        "ComputeImageTagParam76ECD74D",
+      ],
       "Properties": {
         "Roles": [
           {
@@ -598,6 +648,10 @@ docker compose ps",
       "Type": "AWS::IAM::InstanceProfile",
     },
     "ComputeInstance0LaunchTemplateD30E2DD1": {
+      "DependsOn": [
+        "ComputeCaddyImageTagParam02F625DC",
+        "ComputeImageTagParam76ECD74D",
+      ],
       "Properties": {
         "LaunchTemplateData": {
           "MetadataOptions": {
@@ -675,6 +729,54 @@ docker compose ps",
       "Properties": {
         "PolicyDocument": {
           "Statement": [
+            {
+              "Action": [
+                "ssm:DescribeParameters",
+                "ssm:GetParameters",
+                "ssm:GetParameter",
+                "ssm:GetParameterHistory",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ssm:us-west-2:123456789012:parameter",
+                    {
+                      "Ref": "ComputeImageTagParam76ECD74D",
+                    },
+                  ],
+                ],
+              },
+            },
+            {
+              "Action": [
+                "ssm:DescribeParameters",
+                "ssm:GetParameters",
+                "ssm:GetParameter",
+                "ssm:GetParameterHistory",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ssm:us-west-2:123456789012:parameter",
+                    {
+                      "Ref": "ComputeCaddyImageTagParam02F625DC",
+                    },
+                  ],
+                ],
+              },
+            },
             {
               "Action": [
                 "s3:GetObject*",

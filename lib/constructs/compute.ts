@@ -64,12 +64,13 @@
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
 import { NetworkConstruct } from "./network";
 import { ObservabilityConstruct } from "./observability";
 import { SecretsConstruct } from "./secrets";
 import { StorageConstruct } from "./storage";
-import { brandedName, RegionConfig } from "../stack-config";
+import { brandedName, brandedPath, RegionConfig } from "../stack-config";
 
 export interface ComputeConstructProps {
   readonly config: RegionConfig;
@@ -122,6 +123,18 @@ export class ComputeConstruct extends Construct {
   /** One gp3 volume per AZ, RETAIN policy, attached to the AZ-matched EC2. */
   public readonly ebsVolumes: ec2.Volume[];
 
+  /**
+   * SSM String parameter holding the ECR app image tag the EC2 should
+   * run. The tag is read at boot (and on every deploy.sh-triggered
+   * refresh) — NOT baked into user-data — so an image bump updates only
+   * this parameter and never replaces the instance. See the "Option A"
+   * note in `_buildUserData`.
+   */
+  public readonly imageTagParameter: ssm.StringParameter;
+
+  /** SSM String parameter holding the ECR Caddy image tag. See above. */
+  public readonly caddyImageTagParameter: ssm.StringParameter;
+
   constructor(scope: Construct, id: string, props: ComputeConstructProps) {
     super(scope, id);
 
@@ -158,6 +171,47 @@ export class ComputeConstruct extends Construct {
     // NOTE: no explicit CfnInstanceProfile here. Passing `role:` to
     // ec2.Instance below makes CDK create the instance profile — a
     // hand-rolled one would be a second, orphaned IAM resource.
+
+    // -----------------------------------------------------------------
+    // 1b) Image-tag SSM parameters (Option A — decoupled deploys).
+    //
+    // The image tags the box runs live HERE, not in user-data. Baking
+    // them into user-data made every image bump change the boot script,
+    // which (with userDataCausesReplacement) forced a full instance
+    // replacement — and that deadlocked on the single RETAIN EBS volume
+    // (the new instance can't attach a volume the old one still holds).
+    //
+    // Now: user-data reads these parameter names at boot, and
+    // scripts/deploy.sh updates the VALUES (via this CFN resource) then
+    // triggers an in-place `docker compose pull && up -d` over SSM. An
+    // image bump touches only these two parameters; the instance is
+    // never replaced and the EBS volume never moves.
+    //
+    // When state moves off the box (RDS + hosted Chroma) and we run
+    // multiple stateless instances, this same "tag in SSM, pull to
+    // apply" primitive becomes the rolling-deploy mechanism.
+    this.imageTagParameter = new ssm.StringParameter(this, "ImageTagParam", {
+      parameterName: brandedPath("image_tag"),
+      stringValue: props.imageTag,
+      description:
+        "ECR app image tag the EC2 runs. Updated by scripts/deploy.sh; " +
+        "read at boot and on each SSM-triggered refresh.",
+    });
+    this.caddyImageTagParameter = new ssm.StringParameter(
+      this,
+      "CaddyImageTagParam",
+      {
+        parameterName: brandedPath("caddy_image_tag"),
+        stringValue: props.caddyImageTag,
+        description:
+          "ECR Caddy image tag the EC2 runs. Updated by scripts/deploy.sh; " +
+          "read at boot and on each SSM-triggered refresh.",
+      },
+    );
+
+    // Scoped read: GetParameter on exactly these two parameter ARNs.
+    this.imageTagParameter.grantRead(this.instanceRole);
+    this.caddyImageTagParameter.grantRead(this.instanceRole);
 
     // -----------------------------------------------------------------
     // 2) AMI lookup — Canonical Ubuntu 22.04 LTS, arm64 (Graviton).
@@ -229,15 +283,16 @@ export class ComputeConstruct extends Construct {
         role: this.instanceRole,
         securityGroup: props.network.securityGroup,
         userData,
-        // CRITICAL: without this, changing user-data (e.g. adding the
-        // Caddy service) updates the instance's UserData property in
-        // place but does NOT replace the instance — and cloud-init only
-        // runs user-data once, on first boot. The running box would keep
-        // its old /etc/braintwin/docker-compose.yml and never pick up the
-        // new containers. Hashing the user-data into the logical ID forces
-        // a clean replacement → cloud-init re-runs. The data survives
-        // because the EBS data volume is a separate RETAIN volume matched
-        // by size/label, not part of this instance.
+        // Replace the instance when the user-data itself changes, so
+        // cloud-init (which runs user-data only once, on first boot)
+        // actually re-executes a STRUCTURAL boot change. Under Option A
+        // the image tags are NOT in user-data — they live in SSM — so a
+        // routine image bump leaves user-data byte-identical and does
+        // NOT trigger replacement (that path is the in-place SSM refresh
+        // instead). Only genuine boot-script changes (new package, new
+        // mount, Caddyfile edit) replace the box, which is rare. When a
+        // replacement does happen, the operator detaches the RETAIN data
+        // volume first (see scripts / the EBS conflict runbook).
         userDataCausesReplacement: true,
         instanceName: brandedName(`EC2-${idx}`),
         // 10 GiB root for OS + Docker + the BrainTwin image (~3 GB).
@@ -257,6 +312,13 @@ export class ComputeConstruct extends Construct {
         // exfiltration CVEs.
         requireImdsv2: true,
       });
+
+      // The boot-time refresh script reads both image-tag parameters, so
+      // they must exist before the instance comes up.
+      instance.node.addDependency(
+        this.imageTagParameter,
+        this.caddyImageTagParameter,
+      );
 
       // ----- Attach the EBS volume to this EC2 -----
       // /dev/sdf is requested; the kernel renames it to /dev/nvmeXn1 on
@@ -321,14 +383,10 @@ export class ComputeConstruct extends Construct {
    */
   private _buildUserData(props: ComputeConstructProps): ec2.UserData {
     const ud = ec2.UserData.forLinux();
-    const {
-      config,
-      storage,
-      secrets,
-      observability,
-      imageTag,
-      caddyImageTag,
-    } = props;
+    // imageTag / caddyImageTag are intentionally NOT destructured here:
+    // under Option A they live in SSM and are read at runtime by the
+    // refresh script, never baked into this user-data.
+    const { config, storage, secrets, observability } = props;
 
     ud.addCommands(
       // Strict mode + everything to a log file we can `sudo tail` later
@@ -472,28 +530,47 @@ export class ComputeConstruct extends Construct {
       "chmod 600 /etc/braintwin/secrets.env",
       "umask 022",
 
-      // ----- ECR login -----
-      // Token is good for 12h. The boot is one-shot, so re-login on
-      // image refresh requires a redeploy — fine for M.3, automated
-      // pull-and-restart is a Phase 4.0.6.1 concern. Single login
-      // covers both ECR repos (same registry hostname, same auth).
+      // ----- Write the in-place refresh script (Option A) -----
+      // The image tags are decoupled from this user-data. Instead of
+      // baking IMAGE_TAG / CADDY_IMAGE_TAG in (which would make every
+      // bump rewrite user-data → replace the instance → deadlock on the
+      // single RETAIN EBS volume), we write a script that reads the tags
+      // from SSM at RUNTIME, regenerates docker-compose.yml, and runs
+      // `docker compose pull && up -d`. It runs once below at first boot,
+      // and again whenever scripts/deploy.sh fires it via SSM RunCommand
+      // after a deploy — no instance replacement involved.
+      //
+      // The heredoc terminator is QUOTED ('BRAINTWIN_REFRESH_EOF') so the
+      // OUTER user-data bash writes the body verbatim: every $VAR survives
+      // into the file and is expanded when the SCRIPT itself runs. CDK
+      // ${...} substitution still happens at synth — that's how the repo
+      // names and log-group names get baked in. Those are structural and
+      // never change on an image bump, so user-data stays byte-identical
+      // across routine deploys (which is the whole point).
+      "cat > /usr/local/bin/braintwin-refresh.sh <<'BRAINTWIN_REFRESH_EOF'",
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "echo '== braintwin-refresh: regenerating compose from SSM image tags =='",
+      // Resolve region + account from IMDSv2 — standalone so the script
+      // works both at boot and when re-run later over SSM RunCommand.
+      'IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")',
+      'REGION=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)',
+      'ACCOUNT_ID=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)',
+      'export AWS_DEFAULT_REGION="$REGION"',
+      // The two tags — the ONLY things that change on a routine deploy.
+      `IMAGE_TAG=$(aws ssm get-parameter --name ${brandedPath("image_tag")} --query Parameter.Value --output text)`,
+      `CADDY_IMAGE_TAG=$(aws ssm get-parameter --name ${brandedPath("caddy_image_tag")} --query Parameter.Value --output text)`,
+      'echo "Resolved image_tag=$IMAGE_TAG caddy_image_tag=$CADDY_IMAGE_TAG"',
+      // Structural values baked at synth (do not change on image bumps).
       `ECR_REPO="${storage.appRepo.repositoryName}"`,
       `CADDY_REPO="${storage.caddyRepo.repositoryName}"`,
       'REGISTRY="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"',
-      'aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"',
-
-      // ----- Write docker-compose.yml -----
-      // CDK substitutes ${imageTag}, ${caddyImageTag} and the log
-      // group names at synth time (those are TypeScript template
-      // literals reaching CDK tokens). The $-prefixed bash vars
-      // ($REGISTRY, $ECR_REPO, $REGION, etc.) are expanded by bash
-      // when the heredoc fires. Don't quote the EOF terminator - we
-      // WANT bash to expand $-vars on this side.
-      `IMAGE_TAG="${imageTag}"`,
-      `CADDY_IMAGE_TAG="${caddyImageTag}"`,
       `APP_LOG_GROUP="${observability.appLogGroup.logGroupName}"`,
       `BOT_LOG_GROUP="${observability.botLogGroup.logGroupName}"`,
       `CADDY_LOG_GROUP="${observability.caddyLogGroup.logGroupName}"`,
+      // ECR login — re-runs each refresh so a later SSM-triggered pull
+      // always has fresh credentials (the auth token is valid ~12h).
+      'aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"',
       "cat > /etc/braintwin/docker-compose.yml <<COMPOSE_EOF",
       "# Generated by BrainTwinCDK user-data on first boot. Do NOT edit by",
       "# hand — re-deploy via BrainTwinCDK/scripts/deploy.sh instead.",
@@ -633,6 +710,17 @@ export class ComputeConstruct extends Construct {
       "      app:",
       "        condition: service_healthy",
       "COMPOSE_EOF",
+      "",
+      // Pull + (re)start. compose v2 pulls in parallel and only recreates
+      // containers whose image actually changed, so an unchanged service
+      // is left running untouched.
+      "cd /etc/braintwin",
+      "docker compose pull",
+      "docker compose up -d",
+      "docker compose ps",
+      "echo '== braintwin-refresh: done =='",
+      "BRAINTWIN_REFRESH_EOF",
+      "chmod 0755 /usr/local/bin/braintwin-refresh.sh",
 
       // ----- Write the Caddyfile -----
       // Quoted heredoc terminator ('CADDYFILE_EOF') disables bash $-var
@@ -682,18 +770,15 @@ export class ComputeConstruct extends Construct {
       "}",
       "CADDYFILE_EOF",
 
-      // ----- Pull images + start containers -----
-      // -d so the user-data script exits cleanly; docker keeps the
-      // containers running under its systemd unit. Pull is parallel
-      // by default in compose v2, so the app + bot + caddy all
-      // download together.
-      "cd /etc/braintwin",
-      "docker compose pull",
-      "docker compose up -d",
+      // ----- Run the refresh script once (first boot) -----
+      // Pulls the images for whatever tags are currently in SSM and
+      // starts app + bot + caddy. Every subsequent deploy re-runs this
+      // exact script over SSM RunCommand (scripts/deploy.sh) instead of
+      // replacing the instance.
+      "/usr/local/bin/braintwin-refresh.sh",
 
       // ----- Done -----
       "echo '== braintwin user-data complete =='",
-      "docker compose ps",
     );
 
     return ud;

@@ -21,8 +21,15 @@
 #      to `cdk deploy`.
 #   5. bin/braintwin.ts reads both contexts and forwards them to
 #      BrainTwinStack via props.
-#   6. compute.ts interpolates the tags into the EC2 user-data so the
-#      boot-time `docker pull` grabs the right images for app + caddy.
+#   6. compute.ts publishes the tags to two SSM String parameters
+#      (/braintwin/image_tag, /braintwin/caddy_image_tag). The tags are
+#      NOT baked into user-data, so a bump updates only those parameters
+#      and never replaces the EC2 (which would deadlock on the single
+#      RETAIN EBS volume).
+#   7. After `cdk deploy` updates the parameters, this script triggers an
+#      in-place refresh over SSM RunCommand: the box re-reads the tags,
+#      regenerates docker-compose.yml, and runs `docker compose pull &&
+#      up -d`. Container swap in seconds; no instance churn.
 #
 # Any extra args after the script name are passed through to `cdk
 # deploy`, so you can still do things like `--require-approval never`
@@ -53,6 +60,9 @@ REGION="${REGION:-us-west-2}"
 # Export so `cdk` and the aws CLI calls below agree on region without
 # relying on the profile's default (which may differ from $REGION).
 export AWS_REGION="$REGION"
+
+# Stack name mirrors bin/braintwin.ts (`BrainTwinStack-${region}`).
+STACK_NAME="BrainTwinStack-$REGION"
 
 # ECR repos the images live in - must match storage.ts.
 ECR_REPO="${ECR_REPO:-braintwin/app}"
@@ -151,3 +161,58 @@ npx cdk deploy \
   --context "imageTag=$TAG" \
   --context "caddyImageTag=$CADDY_TAG" \
   "$@"
+
+# ----- Trigger an in-place container refresh (Option A) ----------------
+# cdk deploy above updated the /braintwin/image_tag + /braintwin/caddy_image_tag
+# SSM parameters but did NOT touch the running instance (the tags aren't in
+# user-data, so there is no replacement). Tell the box to re-read the tags
+# and pull+restart via the refresh script baked into its user-data.
+echo
+echo "==> Triggering in-place image refresh via SSM RunCommand..."
+
+# All EC2 instances belonging to this stack (usually one).
+INSTANCE_IDS=$(aws cloudformation describe-stack-resources \
+  --stack-name "$STACK_NAME" \
+  --profile "$AWS_PROFILE" --region "$REGION" \
+  --query "StackResources[?ResourceType=='AWS::EC2::Instance'].PhysicalResourceId" \
+  --output text)
+
+if [[ -z "$INSTANCE_IDS" ]]; then
+  echo "    No EC2 instances found in $STACK_NAME — nothing to refresh."
+  exit 0
+fi
+
+# send-command can fail if the instance isn't SSM-registered yet (e.g. a
+# brand-new box still booting — which already runs the refresh from its
+# user-data anyway). Treat a send failure as non-fatal and tell the
+# operator how to re-run it by hand.
+if ! CMD_ID=$(aws ssm send-command \
+  --document-name "AWS-RunShellScript" \
+  --instance-ids $INSTANCE_IDS \
+  --comment "BrainTwin in-place image refresh (deploy.sh)" \
+  --parameters 'commands=["/usr/local/bin/braintwin-refresh.sh"]' \
+  --profile "$AWS_PROFILE" --region "$REGION" \
+  --query "Command.CommandId" --output text 2>/dev/null); then
+  echo "    WARNING: could not send the SSM refresh command." >&2
+  echo "    If this was a FIRST deploy the box already refreshed at boot." >&2
+  echo "    Otherwise the instance may not be SSM-registered yet; re-run:" >&2
+  echo "      aws ssm send-command --document-name AWS-RunShellScript \\" >&2
+  echo "        --instance-ids $INSTANCE_IDS \\" >&2
+  echo "        --parameters 'commands=[\"/usr/local/bin/braintwin-refresh.sh\"]' \\" >&2
+  echo "        --profile $AWS_PROFILE --region $REGION" >&2
+  exit 0
+fi
+
+echo "    Sent command $CMD_ID to: $INSTANCE_IDS"
+for id in $INSTANCE_IDS; do
+  echo "    Waiting for refresh on $id..."
+  if aws ssm wait command-executed \
+    --command-id "$CMD_ID" --instance-id "$id" \
+    --profile "$AWS_PROFILE" --region "$REGION" 2>/dev/null; then
+    echo "    OK: $id refreshed to imageTag=$TAG caddyImageTag=$CADDY_TAG"
+  else
+    echo "    WARNING: refresh on $id did not reach Success. Inspect with:" >&2
+    echo "      aws ssm get-command-invocation --command-id $CMD_ID \\" >&2
+    echo "        --instance-id $id --profile $AWS_PROFILE --region $REGION" >&2
+  fi
+done
