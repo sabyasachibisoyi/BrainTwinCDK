@@ -19,6 +19,7 @@ function makeStack(): cdk.Stack {
     env: { account: "123456789012", region: "us-west-2" },
     config: getConfig("us-west-2"),
     imageTag: "test-tag",
+    caddyImageTag: "test-caddy-tag",
   });
 }
 
@@ -169,15 +170,24 @@ describe("StorageConstruct", () => {
   });
 
   describe("ECR app repo", () => {
-    test("exactly one ECR repo is created", () => {
+    test("two ECR repos are created (app + caddy)", () => {
+      // M.4.a added the caddy repo. If anyone accidentally drops one,
+      // either the app or the TLS edge stops being able to pull.
       const t = Template.fromStack(makeStack());
-      t.resourceCountIs("AWS::ECR::Repository", 1);
+      t.resourceCountIs("AWS::ECR::Repository", 2);
     });
 
-    test("repository name is braintwin/app", () => {
+    test("app repository name is braintwin/app", () => {
       const t = Template.fromStack(makeStack());
       t.hasResourceProperties("AWS::ECR::Repository", {
         RepositoryName: "braintwin/app",
+      });
+    });
+
+    test("caddy repository name is braintwin/caddy", () => {
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::ECR::Repository", {
+        RepositoryName: "braintwin/caddy",
       });
     });
 
@@ -255,6 +265,23 @@ describe("StorageConstruct", () => {
         text.includes("ecr:BatchGetImage"),
       );
       expect(hasEcrPull).toBe(true);
+    });
+
+    test("instance role can pull from BOTH the app repo AND the caddy repo", () => {
+      // Two separate grantPull() calls land two distinct ARN
+      // references in the IAM policy. If anyone reverts the caddy
+      // grant, the EC2 boots fine but Caddy fails to start, which is
+      // an annoying mid-deploy debug. Catch it here.
+      const t = Template.fromStack(makeStack());
+      const policies = t.findResources("AWS::IAM::Policy");
+      const concat = Object.values(policies)
+        .map((p) => JSON.stringify(p.Properties.PolicyDocument))
+        .join("\n");
+      // CDK encodes the repo ARNs as Fn::GetAtt references that include
+      // the construct ID (e.g. StorageAppRepoXYZ, StorageCaddyRepoXYZ).
+      // Grep for both substrings.
+      expect(concat).toContain("AppRepo");
+      expect(concat).toContain("CaddyRepo");
     });
   });
 

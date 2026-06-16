@@ -36,11 +36,20 @@ export interface BrainTwinStackProps extends cdk.StackProps {
    * this into the docker-compose user-data template.
    */
   readonly imageTag: string;
+
+  /**
+   * ECR tag for the custom Caddy image. Threaded through the same way
+   * as imageTag — `--context caddyImageTag=<tag>` from
+   * scripts/deploy.sh, defaulting to "bootstrap" so synth always
+   * works. M.4.b user-data pulls this for the TLS edge.
+   */
+  readonly caddyImageTag: string;
 }
 
 export class BrainTwinStack extends cdk.Stack {
   public readonly config: RegionConfig;
   public readonly imageTag: string;
+  public readonly caddyImageTag: string;
   public readonly network: NetworkConstruct;
   public readonly compute: ComputeConstruct;
   public readonly storage: StorageConstruct;
@@ -51,19 +60,29 @@ export class BrainTwinStack extends cdk.Stack {
     super(scope, id, props);
     this.config = props.config;
     this.imageTag = props.imageTag;
+    this.caddyImageTag = props.caddyImageTag;
 
     // Warn loudly at synth if the operator forgot to set an imageTag.
     // "bootstrap" is fine for `cdk synth` / unit tests, but deploying
     // it would boot an EC2 that fails its `docker pull` and so never
-    // serves traffic — the failure mode is loud at runtime but easy to
-    // miss at deploy time. A synth-warning makes it visible up front.
+    // serves traffic - the failure mode is loud at runtime but easy
+    // to miss at deploy time. A synth-warning makes it visible up
+    // front. Both the app and Caddy tags get the same treatment.
     if (props.imageTag === "bootstrap") {
       cdk.Annotations.of(this).addWarning(
         "imageTag is the placeholder 'bootstrap' - the EC2 user-data " +
-          "will fail to pull a real image. Run BrainTwin/scripts/" +
+          "will fail to pull a real app image. Run BrainTwin/scripts/" +
           "build-and-push.sh then BrainTwinCDK/scripts/deploy.sh (which " +
           "passes the real tag via --context imageTag=<tag>) before " +
           "relying on this deploy.",
+      );
+    }
+    if (props.caddyImageTag === "bootstrap") {
+      cdk.Annotations.of(this).addWarning(
+        "caddyImageTag is the placeholder 'bootstrap' - Caddy will " +
+          "fail to pull. Run BrainTwin/scripts/build-and-push-caddy.sh " +
+          "then BrainTwinCDK/scripts/deploy.sh (which passes " +
+          "--context caddyImageTag=<tag>) before relying on this deploy.",
       );
     }
 
@@ -115,9 +134,10 @@ export class BrainTwinStack extends cdk.Stack {
       config: this.config,
     });
 
-    // M.2.e + M.3.a — Compute: EC2 + EBS + IAM role + EIP association +
-    // full app-bring-up user-data (Docker, SSM secret fetch, ECR pull,
-    // docker compose up).
+    // M.2.e + M.3.a + M.4.b - Compute: EC2 + EBS + IAM role + EIP
+    // association + full bring-up user-data (Docker, SSM secret fetch,
+    // ECR pulls for app AND caddy, Caddyfile template, Cloudflare
+    // Origin Pull CA download, docker compose up).
     this.compute = new ComputeConstruct(this, "Compute", {
       config: this.config,
       network: this.network,
@@ -125,6 +145,7 @@ export class BrainTwinStack extends cdk.Stack {
       secrets: this.secrets,
       observability: this.observability,
       imageTag: this.imageTag,
+      caddyImageTag: this.caddyImageTag,
     });
 
     // ----- Cross-construct IAM grants (compute.instanceRole + others) -----
@@ -138,7 +159,11 @@ export class BrainTwinStack extends cdk.Stack {
     // grantPull: BatchCheckLayerAvailability + GetDownloadUrlForLayer
     // + BatchGetImage + GetAuthorizationToken. M.3.a user-data does
     // `aws ecr get-login-password | docker login` then `docker pull`.
+    // Both the app image AND the Caddy image come from ECR — granting
+    // pull on each repo separately keeps the IAM principal scoped to
+    // exactly the two paths the EC2 needs.
     this.storage.appRepo.grantPull(this.compute.instanceRole);
+    this.storage.caddyRepo.grantPull(this.compute.instanceRole);
 
     // ssm:GetParameter on the four /braintwin/* parameter ARNs + a
     // service-scoped kms:Decrypt. Compute's user-data calls
@@ -166,6 +191,15 @@ export class BrainTwinStack extends cdk.Stack {
         ".last-deploy-tag written by BrainTwin/scripts/build-and-push.sh). " +
         "Threaded into the EC2 user-data as of M.3.a so the boot-time " +
         "`docker pull` targets this tag.",
+    });
+
+    new cdk.CfnOutput(this, "ConfiguredCaddyImageTag", {
+      value: this.caddyImageTag,
+      description:
+        "ECR tag for the custom Caddy image (M.4.a). Threaded through " +
+        "--context caddyImageTag=<tag> from BrainTwinCDK/scripts/deploy.sh " +
+        "(which reads .last-deploy-caddy-tag written by " +
+        "BrainTwin/scripts/build-and-push-caddy.sh).",
     });
   }
 }

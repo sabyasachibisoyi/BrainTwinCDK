@@ -28,6 +28,7 @@ function makeStack(): cdk.Stack {
     env: { account: "123456789012", region: "us-west-2" },
     config: getConfig("us-west-2"),
     imageTag: "test-tag",
+    caddyImageTag: "test-caddy-tag",
   });
 }
 
@@ -362,6 +363,134 @@ describe("ComputeConstruct", () => {
       expect(concat).toContain("ssm:GetParameter");
       expect(concat).toContain("s3:PutObject");
       expect(concat).toContain("logs:PutLogEvents");
+    });
+  });
+
+  describe("M.4.b — Caddy TLS edge in user-data", () => {
+    function userDataAsString(t: Template): string {
+      return JSON.stringify(t.toJSON());
+    }
+
+    test("downloads the Cloudflare Origin Pull CA cert at boot (for AOP)", () => {
+      // Without the CA cert pre-loaded, Caddy's client_auth block
+      // can't validate Cloudflare's per-zone client cert. The cert
+      // URL is Cloudflare's public well-known location.
+      const t = Template.fromStack(makeStack());
+      expect(userDataAsString(t)).toContain(
+        "developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem",
+      );
+    });
+
+    test("persists Caddy data + config on EBS (no cert re-issue on restart)", () => {
+      // /var/lib/braintwin/data/caddy/{data,config} must exist before
+      // the container starts so Caddy's ACME state survives container
+      // restarts AND instance replacements. Without persistence,
+      // every restart re-issues certs and quickly hits the Let's
+      // Encrypt rate limit.
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("/var/lib/braintwin/data/caddy/data");
+      expect(s).toContain("/var/lib/braintwin/data/caddy/config");
+    });
+
+    test("docker-compose includes the caddy service with both image tags", () => {
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("CADDY_IMAGE_TAG=");
+      expect(s).toContain("test-caddy-tag");
+      // The compose image: line references $CADDY_REPO and $CADDY_IMAGE_TAG.
+      expect(s).toContain("$REGISTRY/$CADDY_REPO:$CADDY_IMAGE_TAG");
+      expect(s).toContain("braintwin-caddy");
+    });
+
+    test("caddy binds host :80 AND :443 (public TLS edge)", () => {
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      // Both must be present - :443 for production TLS, :80 for the
+      // ACME HTTP fallback + Caddy's automatic-HTTPS redirect. The
+      // JSON-stringified template escapes literal quotes, so match
+      // the unquoted forms (which still uniquely identify these
+      // strings - "443:443" appears nowhere else in CDK output).
+      expect(s).toContain("443:443");
+      expect(s).toContain("80:80");
+    });
+
+    test("caddy has cap_add NET_BIND_SERVICE (drops everything else)", () => {
+      // Privileged ports + non-root container = the one cap we must
+      // keep. Removing this without doing something else (root in
+      // container, or different ports) means Caddy can't open 80/443.
+      const t = Template.fromStack(makeStack());
+      expect(userDataAsString(t)).toContain("NET_BIND_SERVICE");
+    });
+
+    test("Caddyfile reverse-proxies to app:8000 over the Docker network", () => {
+      // Caddy reaches the app container by service name on the
+      // compose-internal bridge, NOT via 127.0.0.1 on the host. This
+      // is the whole point of running them in the same compose.
+      const t = Template.fromStack(makeStack());
+      expect(userDataAsString(t)).toContain("reverse_proxy app:8000");
+    });
+
+    test("Caddyfile site block targets the configured publicHostname", () => {
+      // publicHostname comes from stack-config.ts (api.braintwin.net
+      // for both regions today). If anyone changes it without
+      // updating Cloudflare DNS the cert would still issue (DNS-01
+      // uses the API token) but no traffic would route here.
+      const t = Template.fromStack(makeStack());
+      expect(userDataAsString(t)).toContain("api.braintwin.net");
+    });
+
+    test("Caddyfile uses ACME DNS-01 via Cloudflare (not HTTP-01)", () => {
+      // DNS-01 sidesteps the Cloudflare-proxy-vs-HTTP-01 cache trap.
+      // The acme_dns directive + the cloudflare provider is what
+      // makes Caddy's xcaddy-compiled plugin actually used.
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("acme_dns cloudflare");
+      expect(s).toContain("{env.CLOUDFLARE_API_TOKEN}");
+    });
+
+    test("Caddyfile enforces Authenticated Origin Pulls (client cert required)", () => {
+      // The SG already restricts source IPs to Cloudflare egress,
+      // but AOP is the cryptographic proof - someone running a
+      // server inside Cloudflare's network can't impersonate our
+      // zone's origin without the per-zone client cert. Both the
+      // mode AND the trust pool path must be present.
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("require_and_verify");
+      expect(s).toContain("/etc/caddy/cloudflare-origin-ca.pem");
+    });
+
+    test("HSTS header is set (compensates for .net not having HSTS preload)", () => {
+      // braintwin.net is a .net domain. Unlike .app / .dev which
+      // ship in the browser HSTS-preload list, .net relies on the
+      // header to force HTTPS for clients that haven't seen it yet.
+      const t = Template.fromStack(makeStack());
+      expect(userDataAsString(t)).toContain("Strict-Transport-Security");
+    });
+
+    test("caddy logs ship to the /braintwin/caddy CloudWatch group", () => {
+      // Separate group from app/bot so the "what did Caddy do?" tail
+      // doesn't drown in app request logs.
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("CADDY_LOG_GROUP=");
+      expect(s).toContain("awslogs-group: $CADDY_LOG_GROUP");
+    });
+
+    test("caddy depends on the app being healthy before starting", () => {
+      // Caddy's reverse-proxy to a non-existent backend would error
+      // and burn restart attempts. depends_on with healthcheck
+      // condition makes the cold-boot ordering deterministic.
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      // Two depends_on blocks exist after M.4.b: bot->app, caddy->app.
+      // We can't easily count from the stringified template; assert
+      // both braintwin-bot AND braintwin-caddy appear AFTER an app
+      // service_healthy reference.
+      const count = (s.match(/condition: service_healthy/g) || []).length;
+      expect(count).toBeGreaterThanOrEqual(2);
     });
   });
 

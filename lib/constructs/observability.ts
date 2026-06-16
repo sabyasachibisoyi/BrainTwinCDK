@@ -66,6 +66,14 @@ export class ObservabilityConstruct extends Construct {
   public readonly botLogGroup: logs.LogGroup;
 
   /**
+   * CloudWatch log group the Caddy reverse-proxy's stdout flows to
+   * (M.4.b). Caddy emits structured JSON access logs + ACME issuance
+   * / renewal events; isolating these from the app stream keeps the
+   * "what did the app do?" tail easy to read.
+   */
+  public readonly caddyLogGroup: logs.LogGroup;
+
+  /**
    * IAM role assumed by the Data Lifecycle Manager service to take
    * the EBS snapshots. Exposed for tests; the service consumes it
    * via the DLM lifecycle policy.
@@ -84,6 +92,7 @@ export class ObservabilityConstruct extends Construct {
     // ref) and to keep the runbook tail-command in sync.
     const appLogGroupName = brandedPath("app");
     const botLogGroupName = brandedPath("bot");
+    const caddyLogGroupName = brandedPath("caddy");
 
     this.appLogGroup = new logs.LogGroup(this, "AppLogGroup", {
       logGroupName: appLogGroupName,
@@ -100,6 +109,12 @@ export class ObservabilityConstruct extends Construct {
 
     this.botLogGroup = new logs.LogGroup(this, "BotLogGroup", {
       logGroupName: botLogGroupName,
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    this.caddyLogGroup = new logs.LogGroup(this, "CaddyLogGroup", {
+      logGroupName: caddyLogGroupName,
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
@@ -270,15 +285,25 @@ export class ObservabilityConstruct extends Construct {
         `CloudWatch log group for the Telegram bot. ` +
         `Tail via: aws logs tail ${botLogGroupName} --follow --profile braintwin`,
     });
+
+    new cdk.CfnOutput(this, "CaddyLogGroupName", {
+      value: caddyLogGroupName,
+      description:
+        `CloudWatch log group for the Caddy reverse proxy (M.4.b+). ` +
+        `Tail via: aws logs tail ${caddyLogGroupName} --follow --profile braintwin`,
+    });
   }
 
   /**
    * Grant the EC2 instance role permission to write to the log groups
-   * via the Docker awslogs log driver. M.3 user-data templates the
-   * driver config; this permission makes the writes work.
+   * via the Docker awslogs log driver. M.3.a user-data templates the
+   * driver config for app + bot; M.4.b adds caddy. This grant covers
+   * all three groups in one call so adding a fourth container is just
+   * a new logs.LogGroup + one line here.
    */
   public grantLogWrite(role: iam.IRole): void {
     this.appLogGroup.grantWrite(role);
     this.botLogGroup.grantWrite(role);
+    this.caddyLogGroup.grantWrite(role);
   }
 }

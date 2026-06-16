@@ -27,6 +27,7 @@ function makeStack(): cdk.Stack {
     env: { account: "123456789012", region: "us-west-2" },
     config: getConfig("us-west-2"),
     imageTag: "test-tag",
+    caddyImageTag: "test-caddy-tag",
   });
 }
 

@@ -43,6 +43,15 @@ const config = getConfig(region);
 const imageTag =
   (app.node.tryGetContext("imageTag") as string) ?? "bootstrap";
 
+// Caddy image tag — same plumbing pattern as imageTag above. M.4.b's
+// user-data runs `docker pull <registry>/braintwin/caddy:<caddyImageTag>`
+// for the TLS edge container. Default "bootstrap" so the first deploy
+// after M.4.a (which only creates the ECR repo) doesn't fail synth.
+// Real deploys come from BrainTwin/scripts/build-and-push-caddy.sh +
+// BrainTwinCDK/scripts/deploy.sh's --context caddyImageTag=<tag>.
+const caddyImageTag =
+  (app.node.tryGetContext("caddyImageTag") as string) ?? "bootstrap";
+
 new BrainTwinStack(app, `BrainTwinStack-${region}`, {
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
@@ -50,7 +59,8 @@ new BrainTwinStack(app, `BrainTwinStack-${region}`, {
   },
   config,
   imageTag,
-  description: `BrainTwin stack — ${region} — Phase 4.0.6 M.2.b/c scaffold`,
+  caddyImageTag,
+  description: `BrainTwin stack — ${region} — Phase 4.0.6 M.4.b`,
 });
 
 app.synth();

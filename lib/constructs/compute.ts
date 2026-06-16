@@ -1,13 +1,15 @@
 /**
  * ComputeConstruct — EC2 + EBS + instance profile + EIP association +
- * full app bring-up.
+ * full app bring-up + Caddy TLS edge.
  *
- * Phase 4.0.6 M.2.e (host + OS) → M.3.a (app bring-up). With the
- * M.3.a expansion, the user-data is end-to-end: by the time first
- * boot completes, the EC2 has Docker installed, the EBS data volume
- * mounted, secrets fetched from SSM, docker-compose.yml written, and
- * `docker compose up -d` running with both the FastAPI app and the
- * Telegram bot containers.
+ * Phase 4.0.6 M.2.e (host + OS) → M.3.a (app bring-up) → M.4.b
+ * (Caddy + Cloudflare DNS-01 + Authenticated Origin Pulls). With
+ * the M.4.b expansion, first boot stands up three containers under
+ * compose: app + bot + caddy. Caddy terminates TLS for
+ * `config.publicHostname`, fronts the FastAPI app over the Docker
+ * network, validates Cloudflare's per-zone client certificate, and
+ * obtains/renews its Let's Encrypt cert via ACME DNS-01 using the
+ * Cloudflare API token from SSM.
  *
  * ## What this construct creates
  *
@@ -85,9 +87,9 @@ export interface ComputeConstructProps {
    */
   readonly secrets: SecretsConstruct;
   /**
-   * Observability construct — compute references the two log group
-   * names so the per-service `awslogs` driver in docker-compose ships
-   * container stdout straight to CloudWatch.
+   * Observability construct — compute references the three log group
+   * names (app, bot, caddy) so the per-service `awslogs` driver in
+   * docker-compose ships container stdout straight to CloudWatch.
    */
   readonly observability: ObservabilityConstruct;
   /**
@@ -99,6 +101,15 @@ export interface ComputeConstructProps {
    * build-and-push.sh before deploy.sh."
    */
   readonly imageTag: string;
+
+  /**
+   * ECR tag for the custom Caddy image (M.4.a / M.4.b). Same plumbing
+   * as imageTag - threaded from bin/braintwin.ts via
+   * `--context caddyImageTag=<tag>`; user-data does `docker pull
+   * <registry>/braintwin/caddy:<caddyImageTag>` for the TLS edge.
+   * Built by BrainTwin/scripts/build-and-push-caddy.sh.
+   */
+  readonly caddyImageTag: string;
 }
 
 export class ComputeConstruct extends Construct {
@@ -218,6 +229,16 @@ export class ComputeConstruct extends Construct {
         role: this.instanceRole,
         securityGroup: props.network.securityGroup,
         userData,
+        // CRITICAL: without this, changing user-data (e.g. adding the
+        // Caddy service) updates the instance's UserData property in
+        // place but does NOT replace the instance — and cloud-init only
+        // runs user-data once, on first boot. The running box would keep
+        // its old /etc/braintwin/docker-compose.yml and never pick up the
+        // new containers. Hashing the user-data into the logical ID forces
+        // a clean replacement → cloud-init re-runs. The data survives
+        // because the EBS data volume is a separate RETAIN volume matched
+        // by size/label, not part of this instance.
+        userDataCausesReplacement: true,
         instanceName: brandedName(`EC2-${idx}`),
         // 10 GiB root for OS + Docker + the BrainTwin image (~3 GB).
         // App data lives on the separate EBS volume mounted at
@@ -300,7 +321,14 @@ export class ComputeConstruct extends Construct {
    */
   private _buildUserData(props: ComputeConstructProps): ec2.UserData {
     const ud = ec2.UserData.forLinux();
-    const { config, storage, secrets, observability, imageTag } = props;
+    const {
+      config,
+      storage,
+      secrets,
+      observability,
+      imageTag,
+      caddyImageTag,
+    } = props;
 
     ud.addCommands(
       // Strict mode + everything to a log file we can `sudo tail` later
@@ -369,8 +397,37 @@ export class ComputeConstruct extends Construct {
       // (UID 10001 in the Dockerfile) can read/write.
       "chown -R 10001:10001 /var/lib/braintwin/data",
 
-      // ----- Caddy directory (cert + Caddyfile land here in M.4) -----
+      // ----- Caddy directory + Cloudflare Origin Pull CA cert (M.4.b) -----
+      // /etc/caddy/ holds the Origin Pull CA we'll bind-mount into the
+      // Caddy container for Authenticated Origin Pulls. The cert is
+      // PUBLIC — Cloudflare publishes it at a well-known URL. We pull
+      // it at boot so a future cert rotation is just "redeploy the
+      // EC2," no operator dance.
+      //
+      // The data and config sub-dirs on the EBS persist Caddy's
+      // Let's Encrypt account info + issued certs across container
+      // restarts AND instance replacements (EBS has RETAIN). Without
+      // persistence Caddy would re-issue every restart and hit Let's
+      // Encrypt's rate limit (5 certs / 7 days / domain).
       "mkdir -p /etc/caddy",
+      "mkdir -p /var/lib/braintwin/data/caddy/data",
+      "mkdir -p /var/lib/braintwin/data/caddy/config",
+      // Caddy's alpine image runs the binary as root, so 0:0 ownership
+      // on the mount source is fine. If the image ever switches to a
+      // non-root UID, bump this to match.
+      "chown -R 0:0 /var/lib/braintwin/data/caddy",
+      // Retry the fetch — under `set -e` a single transient failure
+      // (slow NAT, DNS not warm yet) would otherwise abort the entire
+      // user-data script BEFORE the compose file is even written, which
+      // looks exactly like "Caddy was never configured." 5 attempts with
+      // backoff, then fail loud.
+      "for i in $(seq 1 5); do",
+      "  curl -fsSL https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem -o /etc/caddy/cloudflare-origin-ca.pem && break",
+      '  echo "Origin Pull CA fetch failed (attempt $i); retrying in 5s…"',
+      "  sleep 5",
+      "done",
+      'if [ ! -s /etc/caddy/cloudflare-origin-ca.pem ]; then echo "Could not fetch Cloudflare Origin Pull CA; aborting"; exit 1; fi',
+      "chmod 644 /etc/caddy/cloudflare-origin-ca.pem",
 
       // =================================================================
       // M.3.a additions — app bring-up
@@ -418,20 +475,25 @@ export class ComputeConstruct extends Construct {
       // ----- ECR login -----
       // Token is good for 12h. The boot is one-shot, so re-login on
       // image refresh requires a redeploy — fine for M.3, automated
-      // pull-and-restart is a Phase 4.0.6.1 concern.
+      // pull-and-restart is a Phase 4.0.6.1 concern. Single login
+      // covers both ECR repos (same registry hostname, same auth).
       `ECR_REPO="${storage.appRepo.repositoryName}"`,
+      `CADDY_REPO="${storage.caddyRepo.repositoryName}"`,
       'REGISTRY="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"',
       'aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"',
 
       // ----- Write docker-compose.yml -----
-      // CDK substitutes ${imageTag} and ${...logGroupName} at synth time
-      // (those are TypeScript template literals reaching CDK tokens).
-      // The $-prefixed bash vars ($REGISTRY, $ECR_REPO, $REGION, etc.)
-      // are expanded by bash when the heredoc fires. Don't quote the
-      // EOF terminator — we WANT bash to expand $-vars on this side.
+      // CDK substitutes ${imageTag}, ${caddyImageTag} and the log
+      // group names at synth time (those are TypeScript template
+      // literals reaching CDK tokens). The $-prefixed bash vars
+      // ($REGISTRY, $ECR_REPO, $REGION, etc.) are expanded by bash
+      // when the heredoc fires. Don't quote the EOF terminator - we
+      // WANT bash to expand $-vars on this side.
       `IMAGE_TAG="${imageTag}"`,
+      `CADDY_IMAGE_TAG="${caddyImageTag}"`,
       `APP_LOG_GROUP="${observability.appLogGroup.logGroupName}"`,
       `BOT_LOG_GROUP="${observability.botLogGroup.logGroupName}"`,
+      `CADDY_LOG_GROUP="${observability.caddyLogGroup.logGroupName}"`,
       "cat > /etc/braintwin/docker-compose.yml <<COMPOSE_EOF",
       "# Generated by BrainTwinCDK user-data on first boot. Do NOT edit by",
       "# hand — re-deploy via BrainTwinCDK/scripts/deploy.sh instead.",
@@ -446,9 +508,11 @@ export class ComputeConstruct extends Construct {
       "      - no-new-privileges:true",
       "    cap_drop:",
       "      - ALL",
-      "    # Loopback only. Caddy (M.4) will bind :443 on the host and",
-      "    # reverse-proxy here. Until then, smoke test from inside the",
-      "    # box via SSM Session Manager + curl 127.0.0.1:8000.",
+      "    # Loopback-only host port - public traffic comes through",
+      "    # Caddy (the caddy service below) which reverse-proxies to",
+      "    # app:8000 over the Docker network. This 127.0.0.1 mapping",
+      "    # is kept purely for in-EC2 smoke testing via SSM",
+      "    # (curl http://127.0.0.1:8000/health from the shell).",
       "    ports:",
       '      - "127.0.0.1:8000:8000"',
       "    env_file:",
@@ -519,11 +583,110 @@ export class ComputeConstruct extends Construct {
       "    depends_on:",
       "      app:",
       "        condition: service_healthy",
+      "",
+      "  caddy:",
+      "    # Custom Caddy with caddy-dns/cloudflare plugin compiled in",
+      "    # (BrainTwin/caddy/Dockerfile). Used for ACME DNS-01.",
+      "    image: $REGISTRY/$CADDY_REPO:$CADDY_IMAGE_TAG",
+      "    container_name: braintwin-caddy",
+      "    restart: unless-stopped",
+      "    # Hardening - same as app/bot. The cap_add line is the one",
+      "    # exception: NET_BIND_SERVICE lets a non-root process bind",
+      "    # to :80 and :443. Without it the container can't open the",
+      "    # privileged ports even though it's root inside.",
+      "    security_opt:",
+      "      - no-new-privileges:true",
+      "    cap_drop:",
+      "      - ALL",
+      "    cap_add:",
+      "      - NET_BIND_SERVICE",
+      "    ports:",
+      "      # Public HTTPS. Cloudflare proxy is the only IP set the SG",
+      "      # admits, so the actual exposure is Cloudflare-egress-only.",
+      '      - "443:443"',
+      "      # Plain HTTP. Caddy redirects -> HTTPS automatically. With",
+      "      # Cloudflare proxy + Always Use HTTPS on, public clients",
+      "      # never reach :80, but Caddy needs it for the ACME HTTP",
+      "      # challenge fallback if DNS-01 ever errors mid-renewal.",
+      '      - "80:80"',
+      "    env_file:",
+      "      # CLOUDFLARE_API_TOKEN is read here for the ACME DNS-01",
+      "      # plugin; the Caddyfile references it as",
+      "      # {env.CLOUDFLARE_API_TOKEN}.",
+      "      - /etc/braintwin/secrets.env",
+      "    volumes:",
+      "      - /etc/braintwin/Caddyfile:/etc/caddy/Caddyfile:ro",
+      "      - /etc/caddy/cloudflare-origin-ca.pem:/etc/caddy/cloudflare-origin-ca.pem:ro",
+      "      # Cert + ACME account state on EBS so it survives container",
+      "      # restarts and instance replacements. Without persistence",
+      "      # Caddy re-issues a cert on every restart and burns the LE",
+      "      # rate limit (5 / 7 days / domain).",
+      "      - /var/lib/braintwin/data/caddy/data:/data",
+      "      - /var/lib/braintwin/data/caddy/config:/config",
+      "    logging:",
+      "      driver: awslogs",
+      "      options:",
+      "        awslogs-region: $REGION",
+      "        awslogs-group: $CADDY_LOG_GROUP",
+      "        awslogs-stream: caddy",
+      "    depends_on:",
+      "      app:",
+      "        condition: service_healthy",
       "COMPOSE_EOF",
 
-      // ----- Pull image + start containers -----
+      // ----- Write the Caddyfile -----
+      // Quoted heredoc terminator ('CADDYFILE_EOF') disables bash $-var
+      // expansion - we want every $ in the file to pass through as
+      // literal Caddy syntax (Caddy uses {env.X}-style placeholders,
+      // not $X). CDK template-literal substitution (${...}) still
+      // happens at synth time, which is how publicHostname and the
+      // acme email get baked in.
+      "cat > /etc/braintwin/Caddyfile <<'CADDYFILE_EOF'",
+      "# Generated by BrainTwinCDK user-data on first boot. Do NOT edit by",
+      "# hand - re-deploy via BrainTwinCDK/scripts/deploy.sh instead.",
+      "",
+      "{",
+      `\temail ${config.budgetAlertEmail || "ops@example.invalid"}`,
+      "\t# ACME DNS-01 via Cloudflare API. The token is read from the",
+      "\t# env (env_file in docker-compose).",
+      "\tacme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}",
+      "}",
+      "",
+      `${config.publicHostname} {`,
+      "\t# Reverse proxy to the FastAPI app via the Docker network -",
+      "\t# 'app' resolves to the app container's bridge IP. We pass the",
+      "\t# original client IP via X-Forwarded-For (CF-Connecting-IP",
+      "\t# would also work but this header is the FastAPI middleware's",
+      "\t# default).",
+      "\treverse_proxy app:8000",
+      "",
+      "\t# Authenticated Origin Pulls. mode require_and_verify means",
+      "\t# any client without a valid certificate chained to the",
+      "\t# Cloudflare Origin Pull CA gets refused at TLS handshake. The",
+      "\t# SG already restricts source IPs to Cloudflare egress, but",
+      "\t# AOP is the cryptographic proof - someone running a server",
+      "\t# inside Cloudflare's network can't impersonate our zone's",
+      "\t# origin without that cert.",
+      "\ttls {",
+      "\t\tclient_auth {",
+      "\t\t\tmode require_and_verify",
+      "\t\t\ttrust_pool file /etc/caddy/cloudflare-origin-ca.pem",
+      "\t\t}",
+      "\t}",
+      "",
+      "\t# HSTS. .net doesn't get HSTS preload like .app/.dev do, so we",
+      "\t# add it explicitly. 2-year max-age, includeSubDomains, preload",
+      "\t# (the latter just signals intent; actual preload requires",
+      "\t# submission to https://hstspreload.org).",
+      '\theader Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"',
+      "}",
+      "CADDYFILE_EOF",
+
+      // ----- Pull images + start containers -----
       // -d so the user-data script exits cleanly; docker keeps the
-      // containers running under its systemd unit.
+      // containers running under its systemd unit. Pull is parallel
+      // by default in compose v2, so the app + bot + caddy all
+      // download together.
       "cd /etc/braintwin",
       "docker compose pull",
       "docker compose up -d",
