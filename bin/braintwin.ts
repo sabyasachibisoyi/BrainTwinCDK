@@ -60,7 +60,9 @@ new BrainTwinStack(app, `BrainTwinStack-${region}`, {
   config,
   imageTag,
   caddyImageTag,
-  description: `BrainTwin stack — ${region} — Phase 4.0.6 M.4.b`,
+  // Plain ASCII hyphen only — the CloudFormation console renders
+  // non-ASCII punctuation (em dash) as "?" in the description column.
+  description: `BrainTwin stack - ${region}`,
 });
 
 app.synth();
