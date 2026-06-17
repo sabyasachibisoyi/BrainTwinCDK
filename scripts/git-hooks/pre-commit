@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#
+# BrainTwinCDK pre-commit gate — TypeScript type-check.
+#
+# Enable once per clone (not auto-installed; git won't run repo code on
+# clone for safety):
+#
+#   git config core.hooksPath scripts/git-hooks
+#
+# What it runs
+# ------------
+# `tsc --noEmit` (~8s), which catches the most common breakage — type
+# errors — before they land. The full `npm test` (jest + cdk synth
+# snapshot assertions) is ~3 min, too slow for every commit, so it's the
+# /release gate's job (BrainTwin/.claude/skills/release/SKILL.md step 3).
+#
+# Bypass deliberately with:  git commit --no-verify
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+if [ ! -d node_modules ]; then
+  echo "pre-commit: node_modules missing — run 'npm install'. Skipping type-check." >&2
+  echo "            The /release full-suite gate is the backstop." >&2
+  exit 0
+fi
+
+echo "pre-commit: tsc --noEmit (type-check)…"
+if ! npx --no-install tsc --noEmit; then
+  echo "" >&2
+  echo "pre-commit: TYPE-CHECK FAILED — commit blocked." >&2
+  echo "  Fix the type errors, or bypass deliberately:  git commit --no-verify" >&2
+  exit 1
+fi
