@@ -72,11 +72,20 @@ python diagrams/architecture.py
 
 ```bash
 npm install
+git config core.hooksPath scripts/git-hooks         # enable pre-commit gate (once per clone)
 npx cdk synth                                       # validate
 npx cdk diff                                        # see drift vs deployed
 npx cdk deploy --context region=us-west-2           # primary region
 # npx cdk deploy --context region=ap-south-1        # second region (Phase 5+)
 ```
+
+### Pre-commit hook
+
+`scripts/git-hooks/pre-commit` runs `tsc --noEmit` (~8s) on every commit to
+catch type errors early. The full `npm test` (jest + cdk synth snapshots, ~3
+min) is too slow for every commit, so it runs in the release flow instead.
+Enable once per clone with the `git config core.hooksPath` line above; bypass a
+single commit with `git commit --no-verify`.
 
 ---
 
