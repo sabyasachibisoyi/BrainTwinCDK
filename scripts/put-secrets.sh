@@ -25,6 +25,7 @@ NAMES=(
   "/braintwin/bearer_token"
   "/braintwin/telegram_token"
   "/braintwin/cloudflare_api_token"
+  "/braintwin/allowed_telegram_user_ids"
 )
 
 DESCRIPTIONS=(
@@ -32,6 +33,7 @@ DESCRIPTIONS=(
   "Backend bearer token (matches BACKEND_BEARER_TOKEN — same value Chrome extension sends)."
   "Telegram bot token (123456:ABC-DEF…). Leave empty to skip bot."
   "Cloudflare API token (Zone:DNS:Edit + Origin Pull). Used by Caddy for ACME DNS-01 + AOP."
+  "Allowed Telegram user IDs (comma-separated, e.g. '123456789,987654321'). Bot rejects messages from anyone else."
 )
 
 echo "Populating BrainTwin SSM Parameters in ${REGION} (profile: ${PROFILE})"

@@ -12,7 +12,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
     "ComputePrimaryInstanceId5A264371": {
       "Description": "Primary EC2 instance ID. Use with \`aws ssm start-session --target <id>\` to get a shell on the box (no SSH).",
       "Value": {
-        "Ref": "ComputeInstance03D945A8C7894c017c6d7e0d8",
+        "Ref": "ComputeInstance03D945A8Cb3a8f0044becdaed",
       },
     },
     "ConfiguredCaddyImageTag": {
@@ -46,7 +46,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
     },
     "SecretsParameterNames73405963": {
       "Description": "SSM SecureString parameters the app reads at boot. Populate BEFORE first M.3 deploy using scripts/put-secrets.sh (or one \`aws ssm put-parameter --type SecureString --name <name> --value <value>\` per param).",
-      "Value": "/braintwin/anthropic_key,/braintwin/bearer_token,/braintwin/telegram_token,/braintwin/cloudflare_api_token",
+      "Value": "/braintwin/anthropic_key,/braintwin/bearer_token,/braintwin/telegram_token,/braintwin/cloudflare_api_token,/braintwin/allowed_telegram_user_ids",
     },
     "StorageAppRepoUri1A1C7319": {
       "Description": "ECR repo URI. From your Mac: \`aws ecr get-login-password | docker login --username AWS --password-stdin <uri>; docker push <uri>:vX.Y.Z\`. M.3 user-data templates the pull side.",
@@ -188,7 +188,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
       "Properties": {
         "Device": "/dev/sdf",
         "InstanceId": {
-          "Ref": "ComputeInstance03D945A8C7894c017c6d7e0d8",
+          "Ref": "ComputeInstance03D945A8Cb3a8f0044becdaed",
         },
         "VolumeId": {
           "Ref": "ComputeEbsVolume07C044D41",
@@ -239,7 +239,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
           ],
         },
         "InstanceId": {
-          "Ref": "ComputeInstance03D945A8C7894c017c6d7e0d8",
+          "Ref": "ComputeInstance03D945A8Cb3a8f0044becdaed",
         },
       },
       "Type": "AWS::EC2::EIPAssociation",
@@ -259,7 +259,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
       },
       "Type": "AWS::SSM::Parameter",
     },
-    "ComputeInstance03D945A8C7894c017c6d7e0d8": {
+    "ComputeInstance03D945A8Cb3a8f0044becdaed": {
       "DependsOn": [
         "ComputeCaddyImageTagParam02F625DC",
         "ComputeImageTagParam76ECD74D",
@@ -386,19 +386,6 @@ export AWS_DEFAULT_REGION="$REGION"
 echo "Resolved region=$REGION account=$ACCOUNT_ID"
 mkdir -p /etc/braintwin
 chmod 700 /etc/braintwin
-umask 077
-ANTHROPIC_KEY=$(aws ssm get-parameter --name /braintwin/anthropic_key --with-decryption --query Parameter.Value --output text)
-BEARER_TOKEN=$(aws ssm get-parameter --name /braintwin/bearer_token --with-decryption --query Parameter.Value --output text)
-TELEGRAM_TOKEN=$(aws ssm get-parameter --name /braintwin/telegram_token --with-decryption --query Parameter.Value --output text)
-CLOUDFLARE_TOKEN=$(aws ssm get-parameter --name /braintwin/cloudflare_api_token --with-decryption --query Parameter.Value --output text)
-cat > /etc/braintwin/secrets.env <<EOF
-ANTHROPIC_API_KEY=$ANTHROPIC_KEY
-BACKEND_BEARER_TOKEN=$BEARER_TOKEN
-TELEGRAM_BOT_TOKEN=$TELEGRAM_TOKEN
-CLOUDFLARE_API_TOKEN=$CLOUDFLARE_TOKEN
-EOF
-chmod 600 /etc/braintwin/secrets.env
-umask 022
 cat > /usr/local/bin/braintwin-refresh.sh <<'BRAINTWIN_REFRESH_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -410,6 +397,21 @@ export AWS_DEFAULT_REGION="$REGION"
 IMAGE_TAG=$(aws ssm get-parameter --name /braintwin/image_tag --query Parameter.Value --output text)
 CADDY_IMAGE_TAG=$(aws ssm get-parameter --name /braintwin/caddy_image_tag --query Parameter.Value --output text)
 echo "Resolved image_tag=$IMAGE_TAG caddy_image_tag=$CADDY_IMAGE_TAG"
+umask 077
+ANTHROPIC_KEY=$(aws ssm get-parameter --name /braintwin/anthropic_key --with-decryption --query Parameter.Value --output text)
+BEARER_TOKEN=$(aws ssm get-parameter --name /braintwin/bearer_token --with-decryption --query Parameter.Value --output text)
+TELEGRAM_TOKEN=$(aws ssm get-parameter --name /braintwin/telegram_token --with-decryption --query Parameter.Value --output text)
+CLOUDFLARE_TOKEN=$(aws ssm get-parameter --name /braintwin/cloudflare_api_token --with-decryption --query Parameter.Value --output text)
+ALLOWED_TG_IDS=$(aws ssm get-parameter --name /braintwin/allowed_telegram_user_ids --with-decryption --query Parameter.Value --output text)
+cat > /etc/braintwin/secrets.env <<SECRETS_ENV_EOF
+ANTHROPIC_API_KEY=$ANTHROPIC_KEY
+BACKEND_BEARER_TOKEN=$BEARER_TOKEN
+TELEGRAM_BOT_TOKEN=$TELEGRAM_TOKEN
+CLOUDFLARE_API_TOKEN=$CLOUDFLARE_TOKEN
+ALLOWED_TELEGRAM_USER_IDS=$ALLOWED_TG_IDS
+SECRETS_ENV_EOF
+chmod 600 /etc/braintwin/secrets.env
+umask 022
 ECR_REPO="",
                 {
                   "Ref": "StorageAppRepo7969A3A5",
@@ -511,9 +513,10 @@ services:
       TELEGRAM_STATE_PATH: /data/telegram_state.json
       CAPTURE_FAILURES_PATH: /data/capture_failures.jsonl
       DATABASE_URL: sqlite+aiosqlite:////data/braintwin.db
-      # ALLOWED_TELEGRAM_USER_IDS unset → bot rejects all messages
-      # but DMs the sender their own user ID. To activate, add the
-      # ID to /etc/braintwin/secrets.env and restart the bot.
+      # ALLOWED_TELEGRAM_USER_IDS comes from secrets.env (M.7.5).
+      # Rotate the allowlist via:
+      #   ./scripts/put-secrets.sh   (skip-on-empty all but the 5th)
+      #   ./scripts/deploy.sh        (refresh re-writes secrets.env)
     volumes:
       - /var/lib/braintwin/data:/data
     logging:
@@ -899,6 +902,18 @@ echo '== braintwin user-data complete =='",
                         "Ref": "AWS::Partition",
                       },
                       ":ssm:us-west-2:123456789012:parameter/braintwin/cloudflare_api_token",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:us-west-2:123456789012:parameter/braintwin/allowed_telegram_user_ids",
                     ],
                   ],
                 },

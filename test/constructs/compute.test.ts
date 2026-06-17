@@ -257,7 +257,7 @@ describe("ComputeConstruct", () => {
         .join("\n");
     }
 
-    test("fetches each of the four SSM secret parameters with decryption", () => {
+    test("fetches each of the five SSM secret parameters with decryption", () => {
       const t = Template.fromStack(makeStack());
       const s = userDataAsString(t);
       // The fetch uses `--with-decryption` on each parameter — without
@@ -267,6 +267,10 @@ describe("ComputeConstruct", () => {
       expect(s).toContain("/braintwin/bearer_token");
       expect(s).toContain("/braintwin/telegram_token");
       expect(s).toContain("/braintwin/cloudflare_api_token");
+      // M.7.5: bot allowlist via SSM, rotatable via deploy.sh refresh
+      // (no instance replacement needed).
+      expect(s).toContain("/braintwin/allowed_telegram_user_ids");
+      expect(s).toContain("ALLOWED_TELEGRAM_USER_IDS=");
     });
 
     test("writes secrets.env with mode 0600 and umask 077", () => {

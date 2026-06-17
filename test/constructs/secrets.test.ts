@@ -5,7 +5,7 @@
  * the docstring on secrets.ts). What we DO test:
  *
  *   - The four canonical names are exposed and lowercase-path-formatted.
- *   - The IAM grant scopes GetParameter to exactly these four ARNs
+ *   - The IAM grant scopes GetParameter to exactly these five ARNs
  *     (no `*` leak).
  *   - The KMS Decrypt grant is scoped to the SSM-managed key, not
  *     arbitrary KMS keys in the account.
@@ -91,7 +91,7 @@ describe("SecretsConstruct", () => {
   });
 
   describe("IAM grant — scoped, not wildcard", () => {
-    test("instance role gets ssm:GetParameter on exactly the four ARNs", () => {
+    test("instance role gets ssm:GetParameter on exactly the five ARNs", () => {
       const t = Template.fromStack(makeStack());
       const policies = t.findResources("AWS::IAM::Policy");
       const policyTexts = Object.values(policies).map((p) =>
@@ -105,6 +105,8 @@ describe("SecretsConstruct", () => {
       expect(concat).toContain("/braintwin/bearer_token");
       expect(concat).toContain("/braintwin/telegram_token");
       expect(concat).toContain("/braintwin/cloudflare_api_token");
+      // M.7.5 added this one — bot allowlist.
+      expect(concat).toContain("/braintwin/allowed_telegram_user_ids");
 
       // GetParameter action must be present
       expect(concat).toContain("ssm:GetParameter");

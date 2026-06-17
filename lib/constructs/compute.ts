@@ -506,29 +506,15 @@ export class ComputeConstruct extends Construct {
       'export AWS_DEFAULT_REGION="$REGION"',
       'echo "Resolved region=$REGION account=$ACCOUNT_ID"',
 
-      // ----- Fetch SSM secrets into /etc/braintwin/secrets.env -----
-      // umask 077 → cat heredoc writes mode 0600 by default; we chmod
-      // explicitly after as belt-and-suspenders. /etc/braintwin/ itself
-      // is 0700 so non-root can't even list the secrets file.
+      // ----- Secrets.env directory permissions -----
+      // M.7.5: the actual fetch + secrets.env regeneration happens
+      // INSIDE the refresh script below, so a SSM-triggered redeploy
+      // can rotate secrets without replacing the instance. Here we
+      // only make sure /etc/braintwin/ exists with the right mode
+      // before the refresh script's `cat > /etc/braintwin/secrets.env`
+      // runs.
       "mkdir -p /etc/braintwin",
       "chmod 700 /etc/braintwin",
-      "umask 077",
-      `ANTHROPIC_KEY=$(aws ssm get-parameter --name ${secrets.anthropicKeyName} --with-decryption --query Parameter.Value --output text)`,
-      `BEARER_TOKEN=$(aws ssm get-parameter --name ${secrets.bearerTokenName} --with-decryption --query Parameter.Value --output text)`,
-      `TELEGRAM_TOKEN=$(aws ssm get-parameter --name ${secrets.telegramTokenName} --with-decryption --query Parameter.Value --output text)`,
-      `CLOUDFLARE_TOKEN=$(aws ssm get-parameter --name ${secrets.cloudflareApiTokenName} --with-decryption --query Parameter.Value --output text)`,
-
-      // Heredoc writes the env file. Bash expands $VAR-style references
-      // INSIDE the unquoted EOF; that's what we want — the values were
-      // resolved by the aws-cli calls above.
-      "cat > /etc/braintwin/secrets.env <<EOF",
-      "ANTHROPIC_API_KEY=$ANTHROPIC_KEY",
-      "BACKEND_BEARER_TOKEN=$BEARER_TOKEN",
-      "TELEGRAM_BOT_TOKEN=$TELEGRAM_TOKEN",
-      "CLOUDFLARE_API_TOKEN=$CLOUDFLARE_TOKEN",
-      "EOF",
-      "chmod 600 /etc/braintwin/secrets.env",
-      "umask 022",
 
       // ----- Write the in-place refresh script (Option A) -----
       // The image tags are decoupled from this user-data. Instead of
@@ -557,10 +543,32 @@ export class ComputeConstruct extends Construct {
       'REGION=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)',
       'ACCOUNT_ID=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)',
       'export AWS_DEFAULT_REGION="$REGION"',
-      // The two tags — the ONLY things that change on a routine deploy.
+      // The two image tags — the ones that change on a routine deploy.
       `IMAGE_TAG=$(aws ssm get-parameter --name ${brandedPath("image_tag")} --query Parameter.Value --output text)`,
       `CADDY_IMAGE_TAG=$(aws ssm get-parameter --name ${brandedPath("caddy_image_tag")} --query Parameter.Value --output text)`,
       'echo "Resolved image_tag=$IMAGE_TAG caddy_image_tag=$CADDY_IMAGE_TAG"',
+
+      // ----- Fetch SSM secrets + regenerate /etc/braintwin/secrets.env -----
+      // M.7.5: moved into the refresh script so the operator can
+      // rotate any secret (especially ALLOWED_TELEGRAM_USER_IDS) via
+      // `put-secrets.sh` + `deploy.sh` without instance replacement.
+      // umask 077 → cat heredoc writes mode 0600 by default; chmod is
+      // belt-and-suspenders.
+      "umask 077",
+      `ANTHROPIC_KEY=$(aws ssm get-parameter --name ${secrets.anthropicKeyName} --with-decryption --query Parameter.Value --output text)`,
+      `BEARER_TOKEN=$(aws ssm get-parameter --name ${secrets.bearerTokenName} --with-decryption --query Parameter.Value --output text)`,
+      `TELEGRAM_TOKEN=$(aws ssm get-parameter --name ${secrets.telegramTokenName} --with-decryption --query Parameter.Value --output text)`,
+      `CLOUDFLARE_TOKEN=$(aws ssm get-parameter --name ${secrets.cloudflareApiTokenName} --with-decryption --query Parameter.Value --output text)`,
+      `ALLOWED_TG_IDS=$(aws ssm get-parameter --name ${secrets.allowedTelegramUserIdsName} --with-decryption --query Parameter.Value --output text)`,
+      "cat > /etc/braintwin/secrets.env <<SECRETS_ENV_EOF",
+      "ANTHROPIC_API_KEY=$ANTHROPIC_KEY",
+      "BACKEND_BEARER_TOKEN=$BEARER_TOKEN",
+      "TELEGRAM_BOT_TOKEN=$TELEGRAM_TOKEN",
+      "CLOUDFLARE_API_TOKEN=$CLOUDFLARE_TOKEN",
+      "ALLOWED_TELEGRAM_USER_IDS=$ALLOWED_TG_IDS",
+      "SECRETS_ENV_EOF",
+      "chmod 600 /etc/braintwin/secrets.env",
+      "umask 022",
       // Structural values baked at synth (do not change on image bumps).
       `ECR_REPO="${storage.appRepo.repositoryName}"`,
       `CADDY_REPO="${storage.caddyRepo.repositoryName}"`,
@@ -645,9 +653,10 @@ export class ComputeConstruct extends Construct {
       "      TELEGRAM_STATE_PATH: /data/telegram_state.json",
       "      CAPTURE_FAILURES_PATH: /data/capture_failures.jsonl",
       "      DATABASE_URL: sqlite+aiosqlite:////data/braintwin.db",
-      "      # ALLOWED_TELEGRAM_USER_IDS unset → bot rejects all messages",
-      "      # but DMs the sender their own user ID. To activate, add the",
-      "      # ID to /etc/braintwin/secrets.env and restart the bot.",
+      "      # ALLOWED_TELEGRAM_USER_IDS comes from secrets.env (M.7.5).",
+      "      # Rotate the allowlist via:",
+      "      #   ./scripts/put-secrets.sh   (skip-on-empty all but the 5th)",
+      "      #   ./scripts/deploy.sh        (refresh re-writes secrets.env)",
       "    volumes:",
       "      - /var/lib/braintwin/data:/data",
       "    logging:",
