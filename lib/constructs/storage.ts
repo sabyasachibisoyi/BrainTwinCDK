@@ -97,6 +97,18 @@ export class StorageConstruct extends Construct {
    */
   public readonly appRepo: ecr.Repository;
 
+  /**
+   * ECR repo for the custom Caddy image (Caddy + cloudflare-dns
+   * plugin via xcaddy — see BrainTwin/caddy/Dockerfile). Separate
+   * from appRepo because:
+   *   - Caddy and the app evolve on completely independent cadences.
+   *   - Mixed images in one repo confuse the lifecycle policy.
+   *   - Trust + scan results are easier to reason about per-repo.
+   * Lifecycle policy is identical to appRepo (keep last 30 tagged + 5
+   * untagged); the operational cost of a second repo is negligible.
+   */
+  public readonly caddyRepo: ecr.Repository;
+
   constructor(scope: Construct, id: string, props: StorageConstructProps) {
     super(scope, id);
 
@@ -235,6 +247,46 @@ export class StorageConstruct extends Construct {
         "`aws ecr get-login-password | docker login --username AWS " +
         "--password-stdin <uri>; docker push <uri>:vX.Y.Z`. " +
         "M.3 user-data templates the pull side.",
+    });
+
+    // -----------------------------------------------------------------
+    // 3) ECR Caddy repo - for the custom Caddy + cloudflare-dns image
+    // -----------------------------------------------------------------
+    // Separate from appRepo so the two images' lifecycle policies and
+    // scan cadences don't interfere. Same scan + immutability +
+    // lifecycle posture as appRepo (the rationale is identical: stable
+    // immutable tags, bounded storage).
+    this.caddyRepo = new ecr.Repository(this, "CaddyRepo", {
+      repositoryName: `${brandedLower("caddy").replace(/^braintwin-/, "braintwin/")}`,
+      imageScanOnPush: true,
+      imageTagMutability: ecr.TagMutability.IMMUTABLE,
+      encryption: ecr.RepositoryEncryption.AES_256,
+      lifecycleRules: [
+        {
+          rulePriority: 1,
+          description: "Keep last 5 untagged images (orphan manifests)",
+          tagStatus: ecr.TagStatus.UNTAGGED,
+          maxImageCount: 5,
+        },
+        {
+          rulePriority: 2,
+          // Caddy updates are infrequent vs app, but keep a similar
+          // history so an operator can roll back to an older Caddy
+          // tag without rebuilding.
+          description: "Keep last 30 tagged images",
+          tagStatus: ecr.TagStatus.ANY,
+          maxImageCount: 30,
+        },
+      ],
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      emptyOnDelete: true,
+    });
+
+    new cdk.CfnOutput(this, "CaddyRepoUri", {
+      value: this.caddyRepo.repositoryUri,
+      description:
+        "ECR repo URI for the custom Caddy image. " +
+        "BrainTwin/scripts/build-and-push-caddy.sh pushes here.",
     });
   }
 }

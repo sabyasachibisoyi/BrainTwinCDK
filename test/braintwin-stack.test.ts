@@ -26,6 +26,7 @@ describe("BrainTwinStack — us-west-2 (M.2.b/c scaffold)", () => {
       // Deterministic literal keeps the snapshot stable; real deploys
       // feed the value in via --context imageTag=<tag>.
       imageTag: "test-tag",
+      caddyImageTag: "test-caddy-tag",
     });
   }
 

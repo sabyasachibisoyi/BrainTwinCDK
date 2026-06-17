@@ -21,6 +21,8 @@ cdk.out/
 # Image-tag state written by scripts/build-and-push.sh and read by
 # scripts/deploy.sh. Local to each operator's machine — not source.
 .last-deploy-tag
+# Same for the custom Caddy image (M.4.a).
+.last-deploy-caddy-tag
 
 # Python (for the diagrams script)
 __pycache__/

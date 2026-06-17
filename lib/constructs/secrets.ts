@@ -83,8 +83,18 @@ export class SecretsConstruct extends Construct {
   public readonly telegramTokenName: string;
   /** /braintwin/cloudflare_api_token — Caddy DNS-01 ACME + AOP. */
   public readonly cloudflareApiTokenName: string;
+  /**
+   * /braintwin/allowed_telegram_user_ids — comma-separated allowlist of
+   * Telegram user IDs the bot will accept messages from. Stored as a
+   * SecureString for consistency with the rest of the secrets bag,
+   * though strictly the value isn't a secret (a Telegram user ID is
+   * akin to a public username). M.7.5 added this — before, the
+   * operator had to SSH in and append to /etc/braintwin/secrets.env
+   * by hand, which got wiped on every instance replacement.
+   */
+  public readonly allowedTelegramUserIdsName: string;
 
-  /** All four parameter names, in deterministic order — useful for outputs and the helper script. */
+  /** All five parameter names, in deterministic order — useful for outputs and the helper script. */
   public readonly allParameterNames: readonly string[];
 
   /** Fully-qualified ARNs of each parameter, for tightly-scoped IAM. */
@@ -97,12 +107,14 @@ export class SecretsConstruct extends Construct {
     this.bearerTokenName = brandedPath("bearer_token");
     this.telegramTokenName = brandedPath("telegram_token");
     this.cloudflareApiTokenName = brandedPath("cloudflare_api_token");
+    this.allowedTelegramUserIdsName = brandedPath("allowed_telegram_user_ids");
 
     this.allParameterNames = [
       this.anthropicKeyName,
       this.bearerTokenName,
       this.telegramTokenName,
       this.cloudflareApiTokenName,
+      this.allowedTelegramUserIdsName,
     ];
 
     const { partition, region, account } = cdk.Stack.of(this);

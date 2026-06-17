@@ -79,8 +79,21 @@ export interface RegionConfig {
    * hardcode a personal address here, it would land in git history.
    * Empty string at synth time is fine; observability.ts validates it
    * is set before wiring the actual Budgets subscription at deploy.
+   * Reused by compute.ts as the ACME / Let's Encrypt account email
+   * (M.4.b) — same operator, same address, no reason for a second
+   * config field.
    */
   readonly budgetAlertEmail: string;
+
+  /**
+   * Public hostname for the BrainTwin API — what the Chrome extension
+   * and Telegram bot endpoints point at. Caddy uses this as the site
+   * block in the templated /etc/braintwin/Caddyfile (the ACME DNS-01
+   * challenge requests a certificate for this exact name). M.4 uses
+   * an `api.` subdomain so the apex `braintwin.net` stays available
+   * for a future landing page.
+   */
+  readonly publicHostname: string;
 }
 
 /**
@@ -106,6 +119,7 @@ export const CONFIG: Record<string, RegionConfig> = {
     // Graduated early-warnings at 40/60/80/100% of the cap.
     budgetThresholdsUSD: [10, 15, 20, 25],
     budgetAlertEmail: ALERT_EMAIL,
+    publicHostname: "api.braintwin.net",
   },
   // Phase 5+ — NOT deployed on day one. The config sits here so
   // `cdk deploy --context region=ap-south-1` is a one-flag invocation
@@ -117,6 +131,7 @@ export const CONFIG: Record<string, RegionConfig> = {
     ebsSizeGiB: 20,
     budgetThresholdsUSD: [10, 15, 20, 25],
     budgetAlertEmail: ALERT_EMAIL,
+    publicHostname: "api.braintwin.net",
   },
 };
 

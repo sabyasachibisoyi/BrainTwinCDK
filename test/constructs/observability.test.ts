@@ -24,14 +24,22 @@ function makeStack(): cdk.Stack {
     env: { account: "123456789012", region: "us-west-2" },
     config: getConfig("us-west-2"),
     imageTag: "test-tag",
+    caddyImageTag: "test-caddy-tag",
   });
 }
 
 describe("ObservabilityConstruct", () => {
   describe("CloudWatch log groups", () => {
-    test("creates exactly two log groups (app + bot)", () => {
+    test("creates exactly three log groups (app + bot + caddy as of M.4.b)", () => {
       const t = Template.fromStack(makeStack());
-      t.resourceCountIs("AWS::Logs::LogGroup", 2);
+      t.resourceCountIs("AWS::Logs::LogGroup", 3);
+    });
+
+    test("caddy log group is at /braintwin/caddy", () => {
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::Logs::LogGroup", {
+        LogGroupName: brandedPath("caddy"),
+      });
     });
 
     test("app log group is at /braintwin/app", () => {

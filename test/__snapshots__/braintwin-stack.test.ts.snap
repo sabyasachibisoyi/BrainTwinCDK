@@ -12,11 +12,15 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
     "ComputePrimaryInstanceId5A264371": {
       "Description": "Primary EC2 instance ID. Use with \`aws ssm start-session --target <id>\` to get a shell on the box (no SSH).",
       "Value": {
-        "Ref": "ComputeInstance03D945A8C",
+        "Ref": "ComputeInstance03D945A8Cb3a8f0044becdaed",
       },
     },
+    "ConfiguredCaddyImageTag": {
+      "Description": "ECR Caddy tag configured via --context caddyImageTag=<tag> (deploy.sh reads .last-deploy-caddy-tag). Published to SSM /braintwin/caddy_image_tag; the EC2 reads it on boot + refresh.",
+      "Value": "test-caddy-tag",
+    },
     "ConfiguredImageTag": {
-      "Description": "ECR tag configured for this stack via --context imageTag=<tag> (handled by BrainTwinCDK/scripts/deploy.sh, which reads .last-deploy-tag written by BrainTwin/scripts/build-and-push.sh). Threaded into the EC2 user-data as of M.3.a so the boot-time \`docker pull\` targets this tag.",
+      "Description": "ECR app tag configured via --context imageTag=<tag> (BrainTwinCDK/scripts/deploy.sh reads .last-deploy-tag). Published to SSM /braintwin/image_tag; the EC2 reads it on boot + refresh.",
       "Value": "test-tag",
     },
     "NetworkElasticIpAddressCF8BCA7B": {
@@ -36,9 +40,13 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
       "Description": "CloudWatch log group for the Telegram bot. Tail via: aws logs tail /braintwin/bot --follow --profile braintwin",
       "Value": "/braintwin/bot",
     },
+    "ObservabilityCaddyLogGroupNameF79BB3AD": {
+      "Description": "CloudWatch log group for the Caddy reverse proxy (M.4.b+). Tail via: aws logs tail /braintwin/caddy --follow --profile braintwin",
+      "Value": "/braintwin/caddy",
+    },
     "SecretsParameterNames73405963": {
       "Description": "SSM SecureString parameters the app reads at boot. Populate BEFORE first M.3 deploy using scripts/put-secrets.sh (or one \`aws ssm put-parameter --type SecureString --name <name> --value <value>\` per param).",
-      "Value": "/braintwin/anthropic_key,/braintwin/bearer_token,/braintwin/telegram_token,/braintwin/cloudflare_api_token",
+      "Value": "/braintwin/anthropic_key,/braintwin/bearer_token,/braintwin/telegram_token,/braintwin/cloudflare_api_token,/braintwin/allowed_telegram_user_ids",
     },
     "StorageAppRepoUri1A1C7319": {
       "Description": "ECR repo URI. From your Mac: \`aws ecr get-login-password | docker login --username AWS --password-stdin <uri>; docker push <uri>:vX.Y.Z\`. M.3 user-data templates the pull side.",
@@ -91,6 +99,57 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
         ],
       },
     },
+    "StorageCaddyRepoUriCBD368A7": {
+      "Description": "ECR repo URI for the custom Caddy image. BrainTwin/scripts/build-and-push-caddy.sh pushes here.",
+      "Value": {
+        "Fn::Join": [
+          "",
+          [
+            {
+              "Fn::Select": [
+                4,
+                {
+                  "Fn::Split": [
+                    ":",
+                    {
+                      "Fn::GetAtt": [
+                        "StorageCaddyRepoB0176CFB",
+                        "Arn",
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+            ".dkr.ecr.",
+            {
+              "Fn::Select": [
+                3,
+                {
+                  "Fn::Split": [
+                    ":",
+                    {
+                      "Fn::GetAtt": [
+                        "StorageCaddyRepoB0176CFB",
+                        "Arn",
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+            ".",
+            {
+              "Ref": "AWS::URLSuffix",
+            },
+            "/",
+            {
+              "Ref": "StorageCaddyRepoB0176CFB",
+            },
+          ],
+        ],
+      },
+    },
     "StorageStateBucketNameB4CCE033": {
       "Description": "S3 bucket for Litestream WAL, Chroma nightly snapshots, and captured images. RETAIN - survives cdk destroy.",
       "Value": {
@@ -110,11 +169,26 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
     },
   },
   "Resources": {
+    "ComputeCaddyImageTagParam02F625DC": {
+      "Properties": {
+        "Description": "ECR Caddy image tag the EC2 runs. Updated by scripts/deploy.sh; read at boot and on each SSM-triggered refresh.",
+        "Name": "/braintwin/caddy_image_tag",
+        "Tags": {
+          "ManagedBy": "BrainTwinCDK",
+          "Phase": "4.0.6",
+          "Project": "BrainTwin",
+          "Region": "us-west-2",
+        },
+        "Type": "String",
+        "Value": "test-caddy-tag",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
     "ComputeEbsAttachment09427EA70": {
       "Properties": {
         "Device": "/dev/sdf",
         "InstanceId": {
-          "Ref": "ComputeInstance03D945A8C",
+          "Ref": "ComputeInstance03D945A8Cb3a8f0044becdaed",
         },
         "VolumeId": {
           "Ref": "ComputeEbsVolume07C044D41",
@@ -165,13 +239,30 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
           ],
         },
         "InstanceId": {
-          "Ref": "ComputeInstance03D945A8C",
+          "Ref": "ComputeInstance03D945A8Cb3a8f0044becdaed",
         },
       },
       "Type": "AWS::EC2::EIPAssociation",
     },
-    "ComputeInstance03D945A8C": {
+    "ComputeImageTagParam76ECD74D": {
+      "Properties": {
+        "Description": "ECR app image tag the EC2 runs. Updated by scripts/deploy.sh; read at boot and on each SSM-triggered refresh.",
+        "Name": "/braintwin/image_tag",
+        "Tags": {
+          "ManagedBy": "BrainTwinCDK",
+          "Phase": "4.0.6",
+          "Project": "BrainTwin",
+          "Region": "us-west-2",
+        },
+        "Type": "String",
+        "Value": "test-tag",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "ComputeInstance03D945A8Cb3a8f0044becdaed": {
       "DependsOn": [
+        "ComputeCaddyImageTagParam02F625DC",
+        "ComputeImageTagParam76ECD74D",
         "ComputeInstanceRoleDefaultPolicyBD7127B5",
         "ComputeInstanceRoleC860B428",
       ],
@@ -278,6 +369,16 @@ grep -q "^LABEL=braintwin-data " /etc/fstab || echo "LABEL=braintwin-data /var/l
 mount -a
 chown -R 10001:10001 /var/lib/braintwin/data
 mkdir -p /etc/caddy
+mkdir -p /var/lib/braintwin/data/caddy/data
+mkdir -p /var/lib/braintwin/data/caddy/config
+chown -R 0:0 /var/lib/braintwin/data/caddy
+for i in $(seq 1 5); do
+  curl -fsSL https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem -o /etc/caddy/cloudflare-origin-ca.pem && break
+  echo "Origin Pull CA fetch failed (attempt $i); retrying in 5s…"
+  sleep 5
+done
+if [ ! -s /etc/caddy/cloudflare-origin-ca.pem ]; then echo "Could not fetch Cloudflare Origin Pull CA; aborting"; exit 1; fi
+chmod 644 /etc/caddy/cloudflare-origin-ca.pem
 IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
 REGION=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
 ACCOUNT_ID=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)
@@ -285,17 +386,30 @@ export AWS_DEFAULT_REGION="$REGION"
 echo "Resolved region=$REGION account=$ACCOUNT_ID"
 mkdir -p /etc/braintwin
 chmod 700 /etc/braintwin
+cat > /usr/local/bin/braintwin-refresh.sh <<'BRAINTWIN_REFRESH_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo '== braintwin-refresh: regenerating compose from SSM image tags =='
+IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+REGION=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+ACCOUNT_ID=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)
+export AWS_DEFAULT_REGION="$REGION"
+IMAGE_TAG=$(aws ssm get-parameter --name /braintwin/image_tag --query Parameter.Value --output text)
+CADDY_IMAGE_TAG=$(aws ssm get-parameter --name /braintwin/caddy_image_tag --query Parameter.Value --output text)
+echo "Resolved image_tag=$IMAGE_TAG caddy_image_tag=$CADDY_IMAGE_TAG"
 umask 077
 ANTHROPIC_KEY=$(aws ssm get-parameter --name /braintwin/anthropic_key --with-decryption --query Parameter.Value --output text)
 BEARER_TOKEN=$(aws ssm get-parameter --name /braintwin/bearer_token --with-decryption --query Parameter.Value --output text)
 TELEGRAM_TOKEN=$(aws ssm get-parameter --name /braintwin/telegram_token --with-decryption --query Parameter.Value --output text)
 CLOUDFLARE_TOKEN=$(aws ssm get-parameter --name /braintwin/cloudflare_api_token --with-decryption --query Parameter.Value --output text)
-cat > /etc/braintwin/secrets.env <<EOF
+ALLOWED_TG_IDS=$(aws ssm get-parameter --name /braintwin/allowed_telegram_user_ids --with-decryption --query Parameter.Value --output text)
+cat > /etc/braintwin/secrets.env <<SECRETS_ENV_EOF
 ANTHROPIC_API_KEY=$ANTHROPIC_KEY
 BACKEND_BEARER_TOKEN=$BEARER_TOKEN
 TELEGRAM_BOT_TOKEN=$TELEGRAM_TOKEN
 CLOUDFLARE_API_TOKEN=$CLOUDFLARE_TOKEN
-EOF
+ALLOWED_TELEGRAM_USER_IDS=$ALLOWED_TG_IDS
+SECRETS_ENV_EOF
 chmod 600 /etc/braintwin/secrets.env
 umask 022
 ECR_REPO="",
@@ -303,9 +417,12 @@ ECR_REPO="",
                   "Ref": "StorageAppRepo7969A3A5",
                 },
                 ""
+CADDY_REPO="",
+                {
+                  "Ref": "StorageCaddyRepoB0176CFB",
+                },
+                ""
 REGISTRY="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
-aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-IMAGE_TAG="test-tag"
 APP_LOG_GROUP="",
                 {
                   "Ref": "ObservabilityAppLogGroupE3B481A7",
@@ -316,6 +433,12 @@ BOT_LOG_GROUP="",
                   "Ref": "ObservabilityBotLogGroup0E95D559",
                 },
                 ""
+CADDY_LOG_GROUP="",
+                {
+                  "Ref": "ObservabilityCaddyLogGroupD9AB6A02",
+                },
+                ""
+aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 cat > /etc/braintwin/docker-compose.yml <<COMPOSE_EOF
 # Generated by BrainTwinCDK user-data on first boot. Do NOT edit by
 # hand — re-deploy via BrainTwinCDK/scripts/deploy.sh instead.
@@ -330,9 +453,11 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    # Loopback only. Caddy (M.4) will bind :443 on the host and
-    # reverse-proxy here. Until then, smoke test from inside the
-    # box via SSM Session Manager + curl 127.0.0.1:8000.
+    # Loopback-only host port - public traffic comes through
+    # Caddy (the caddy service below) which reverse-proxies to
+    # app:8000 over the Docker network. This 127.0.0.1 mapping
+    # is kept purely for in-EC2 smoke testing via SSM
+    # (curl http://127.0.0.1:8000/health from the shell).
     ports:
       - "127.0.0.1:8000:8000"
     env_file:
@@ -388,9 +513,10 @@ services:
       TELEGRAM_STATE_PATH: /data/telegram_state.json
       CAPTURE_FAILURES_PATH: /data/capture_failures.jsonl
       DATABASE_URL: sqlite+aiosqlite:////data/braintwin.db
-      # ALLOWED_TELEGRAM_USER_IDS unset → bot rejects all messages
-      # but DMs the sender their own user ID. To activate, add the
-      # ID to /etc/braintwin/secrets.env and restart the bot.
+      # ALLOWED_TELEGRAM_USER_IDS comes from secrets.env (M.7.5).
+      # Rotate the allowlist via:
+      #   ./scripts/put-secrets.sh   (skip-on-empty all but the 5th)
+      #   ./scripts/deploy.sh        (refresh re-writes secrets.env)
     volumes:
       - /var/lib/braintwin/data:/data
     logging:
@@ -403,12 +529,106 @@ services:
     depends_on:
       app:
         condition: service_healthy
+
+  caddy:
+    # Custom Caddy with caddy-dns/cloudflare plugin compiled in
+    # (BrainTwin/caddy/Dockerfile). Used for ACME DNS-01.
+    image: $REGISTRY/$CADDY_REPO:$CADDY_IMAGE_TAG
+    container_name: braintwin-caddy
+    restart: unless-stopped
+    # Hardening - same as app/bot. The cap_add line is the one
+    # exception: NET_BIND_SERVICE lets a non-root process bind
+    # to :80 and :443. Without it the container can't open the
+    # privileged ports even though it's root inside.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    ports:
+      # Public HTTPS. Cloudflare proxy is the only IP set the SG
+      # admits, so the actual exposure is Cloudflare-egress-only.
+      - "443:443"
+      # Plain HTTP. Caddy redirects -> HTTPS automatically. With
+      # Cloudflare proxy + Always Use HTTPS on, public clients
+      # never reach :80, but Caddy needs it for the ACME HTTP
+      # challenge fallback if DNS-01 ever errors mid-renewal.
+      - "80:80"
+    env_file:
+      # CLOUDFLARE_API_TOKEN is read here for the ACME DNS-01
+      # plugin; the Caddyfile references it as
+      # {env.CLOUDFLARE_API_TOKEN}.
+      - /etc/braintwin/secrets.env
+    volumes:
+      - /etc/braintwin/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /etc/caddy/cloudflare-origin-ca.pem:/etc/caddy/cloudflare-origin-ca.pem:ro
+      # Cert + ACME account state on EBS so it survives container
+      # restarts and instance replacements. Without persistence
+      # Caddy re-issues a cert on every restart and burns the LE
+      # rate limit (5 / 7 days / domain).
+      - /var/lib/braintwin/data/caddy/data:/data
+      - /var/lib/braintwin/data/caddy/config:/config
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: $REGION
+        awslogs-group: $CADDY_LOG_GROUP
+        awslogs-stream: caddy
+    depends_on:
+      app:
+        condition: service_healthy
 COMPOSE_EOF
+
 cd /etc/braintwin
 docker compose pull
 docker compose up -d
-echo '== braintwin user-data complete =='
-docker compose ps",
+docker compose ps
+echo '== braintwin-refresh: done =='
+BRAINTWIN_REFRESH_EOF
+chmod 0755 /usr/local/bin/braintwin-refresh.sh
+cat > /etc/braintwin/Caddyfile <<'CADDYFILE_EOF'
+# Generated by BrainTwinCDK user-data on first boot. Do NOT edit by
+# hand - re-deploy via BrainTwinCDK/scripts/deploy.sh instead.
+
+{
+	email ops@example.invalid
+	# ACME DNS-01 via Cloudflare API. The token is read from the
+	# env (env_file in docker-compose).
+	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+}
+
+api.braintwin.net {
+	# Reverse proxy to the FastAPI app via the Docker network -
+	# 'app' resolves to the app container's bridge IP. We pass the
+	# original client IP via X-Forwarded-For (CF-Connecting-IP
+	# would also work but this header is the FastAPI middleware's
+	# default).
+	reverse_proxy app:8000
+
+	# Authenticated Origin Pulls. mode require_and_verify means
+	# any client without a valid certificate chained to the
+	# Cloudflare Origin Pull CA gets refused at TLS handshake. The
+	# SG already restricts source IPs to Cloudflare egress, but
+	# AOP is the cryptographic proof - someone running a server
+	# inside Cloudflare's network can't impersonate our zone's
+	# origin without that cert.
+	tls {
+		client_auth {
+			mode require_and_verify
+			trust_pool file /etc/caddy/cloudflare-origin-ca.pem
+		}
+	}
+
+	# HSTS. .net doesn't get HSTS preload like .app/.dev do, so we
+	# add it explicitly. 2-year max-age, includeSubDomains, preload
+	# (the latter just signals intent; actual preload requires
+	# submission to https://hstspreload.org).
+	header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+}
+CADDYFILE_EOF
+/usr/local/bin/braintwin-refresh.sh
+echo '== braintwin user-data complete =='",
               ],
             ],
           },
@@ -417,6 +637,10 @@ docker compose ps",
       "Type": "AWS::EC2::Instance",
     },
     "ComputeInstance0InstanceProfileEC28C8A2": {
+      "DependsOn": [
+        "ComputeCaddyImageTagParam02F625DC",
+        "ComputeImageTagParam76ECD74D",
+      ],
       "Properties": {
         "Roles": [
           {
@@ -427,6 +651,10 @@ docker compose ps",
       "Type": "AWS::IAM::InstanceProfile",
     },
     "ComputeInstance0LaunchTemplateD30E2DD1": {
+      "DependsOn": [
+        "ComputeCaddyImageTagParam02F625DC",
+        "ComputeImageTagParam76ECD74D",
+      ],
       "Properties": {
         "LaunchTemplateData": {
           "MetadataOptions": {
@@ -506,6 +734,54 @@ docker compose ps",
           "Statement": [
             {
               "Action": [
+                "ssm:DescribeParameters",
+                "ssm:GetParameters",
+                "ssm:GetParameter",
+                "ssm:GetParameterHistory",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ssm:us-west-2:123456789012:parameter",
+                    {
+                      "Ref": "ComputeImageTagParam76ECD74D",
+                    },
+                  ],
+                ],
+              },
+            },
+            {
+              "Action": [
+                "ssm:DescribeParameters",
+                "ssm:GetParameters",
+                "ssm:GetParameter",
+                "ssm:GetParameterHistory",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ssm:us-west-2:123456789012:parameter",
+                    {
+                      "Ref": "ComputeCaddyImageTagParam02F625DC",
+                    },
+                  ],
+                ],
+              },
+            },
+            {
+              "Action": [
                 "s3:GetObject*",
                 "s3:GetBucket*",
                 "s3:List*",
@@ -562,6 +838,20 @@ docker compose ps",
             },
             {
               "Action": [
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:GetDownloadUrlForLayer",
+                "ecr:BatchGetImage",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "StorageCaddyRepoB0176CFB",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": [
                 "ssm:GetParameter",
                 "ssm:GetParameters",
               ],
@@ -615,6 +905,18 @@ docker compose ps",
                     ],
                   ],
                 },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:us-west-2:123456789012:parameter/braintwin/allowed_telegram_user_ids",
+                    ],
+                  ],
+                },
               ],
             },
             {
@@ -660,6 +962,19 @@ docker compose ps",
               "Resource": {
                 "Fn::GetAtt": [
                   "ObservabilityBotLogGroup0E95D559",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "ObservabilityCaddyLogGroupD9AB6A02",
                   "Arn",
                 ],
               },
@@ -1307,6 +1622,33 @@ docker compose ps",
       },
       "Type": "AWS::Budgets::Budget",
     },
+    "ObservabilityCaddyLogGroupD9AB6A02": {
+      "DeletionPolicy": "Retain",
+      "Properties": {
+        "LogGroupName": "/braintwin/caddy",
+        "RetentionInDays": 30,
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+      },
+      "Type": "AWS::Logs::LogGroup",
+      "UpdateReplacePolicy": "Retain",
+    },
     "ObservabilityDlmRoleC8FECA3D": {
       "Properties": {
         "AssumeRolePolicyDocument": {
@@ -1439,6 +1781,40 @@ docker compose ps",
           "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Keep last 5 untagged images (orphan manifests)","selection":{"tagStatus":"untagged","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}},{"rulePriority":2,"description":"Keep last 30 tagged images (~3 months at weekly cadence)","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":30},"action":{"type":"expire"}}]}",
         },
         "RepositoryName": "braintwin/app",
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Delete",
+    },
+    "StorageCaddyRepoB0176CFB": {
+      "DeletionPolicy": "Delete",
+      "Properties": {
+        "EmptyOnDelete": true,
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Keep last 5 untagged images (orphan manifests)","selection":{"tagStatus":"untagged","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}},{"rulePriority":2,"description":"Keep last 30 tagged images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":30},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "braintwin/caddy",
         "Tags": [
           {
             "Key": "ManagedBy",
