@@ -68,6 +68,23 @@ describe("ComputeConstruct", () => {
       });
     });
 
+    test("IMDS hop limit is 2 (so Docker containers can reach the metadata svc)", () => {
+      // CDK's `requireImdsv2: true` shortcut defaults the hop limit to 1.
+      // A hop limit of 1 means in-container processes (one extra hop via
+      // docker0) get NoCredentialProviders when the AWS SDK falls back
+      // to IMDS - which is exactly how Litestream errors at M.5. We use
+      // a CDK Aspect to bump this to 2; if anyone reverts that, the
+      // next deploy ships with Litestream broken at boot.
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::EC2::LaunchTemplate", {
+        LaunchTemplateData: Match.objectLike({
+          MetadataOptions: Match.objectLike({
+            HttpPutResponseHopLimit: 2,
+          }),
+        }),
+      });
+    });
+
     test("root volume is 10 GiB gp3, encrypted, delete-on-terminate", () => {
       // `blockDevices` on ec2.Instance render on the Instance resource;
       // the LaunchTemplate exists only to carry IMDSv2 MetadataOptions.
@@ -536,6 +553,100 @@ describe("ComputeConstruct", () => {
       // service_healthy reference.
       const count = (s.match(/condition: service_healthy/g) || []).length;
       expect(count).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  describe("M.5 — backups + system metrics in user-data", () => {
+    function userDataAsString(t: Template): string {
+      return JSON.stringify(t.toJSON());
+    }
+
+    test("Litestream service is in the docker-compose template", () => {
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("litestream/litestream:");
+      expect(s).toContain("braintwin-litestream");
+    });
+
+    test("Litestream runs as UID 10001 (matches DB file owner; avoids cap_drop DAC trap)", () => {
+      // The Litestream image runs as root by default. With our
+      // `cap_drop: ALL` hardening, root inside the container loses
+      // CAP_DAC_OVERRIDE and can no longer write to files owned by
+      // UID 10001 (which the app container produces). SQLite reports
+      // that as "attempt to write a readonly database" - a confusing
+      // error for what is really a permissions issue. Pinning the
+      // Litestream service to UID 10001 dodges the whole capability
+      // dance. See design doc §14.
+      const t = Template.fromStack(makeStack());
+      // JSON.stringify escapes the inner double quotes, so we search
+      // for the unescaped form.
+      expect(userDataAsString(t)).toContain('user: \\"10001:10001\\"');
+    });
+
+    test("litestream.yml points at the project's S3 state bucket + litestream/ prefix", () => {
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      // The bucket name is templated at runtime using $ACCOUNT_ID/$REGION
+      // resolved by IMDS in the refresh script.
+      expect(s).toContain("bucket: braintwin-state-$ACCOUNT_ID-$REGION");
+      expect(s).toContain("path: litestream/braintwin.db");
+    });
+
+    test("Litestream retention matches the S3 lifecycle rule (7d / 168h)", () => {
+      // If anyone bumps retention up here, they need to bump the s3
+      // lifecycle rule on litestream/ in storage.ts to match.
+      const t = Template.fromStack(makeStack());
+      expect(userDataAsString(t)).toContain("retention: 168h");
+    });
+
+    test("CloudWatch Agent is installed + started", () => {
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("amazon-cloudwatch-agent.deb");
+      expect(s).toContain("amazon-cloudwatch-agent-ctl");
+      // Config landed in the right place
+      expect(s).toContain("/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json");
+    });
+
+    test("CW Agent collects CPU + memory + disk + diskio + netstat + swap", () => {
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      // JSON-stringified template double-escapes inner quotes, so we
+      // can't search for the literal `"cpu":`. The agent JSON's metric
+      // names are still unique enough on their own.
+      expect(s).toContain("cpu_usage_idle");
+      expect(s).toContain("mem_used_percent");
+      expect(s).toContain("used_percent");
+      expect(s).toContain("io_time");
+      expect(s).toContain("tcp_established");
+      expect(s).toContain("swap_used_percent");
+    });
+
+    test("CW Agent metrics land in the BrainTwin/System namespace", () => {
+      // Same escaping wrinkle. Search for the unquoted form.
+      const t = Template.fromStack(makeStack());
+      expect(userDataAsString(t)).toContain("BrainTwin/System");
+    });
+
+    test("Chroma backup script + systemd timer are installed", () => {
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("/usr/local/bin/braintwin-chroma-backup.sh");
+      expect(s).toContain("/etc/systemd/system/braintwin-chroma-backup.timer");
+      expect(s).toContain("systemctl enable --now braintwin-chroma-backup.timer");
+    });
+
+    test("Chroma timer fires at 03:30 UTC (30min after DLM snapshots at 03:00)", () => {
+      // Stacking the snapshot + the tarball on the same minute would
+      // double the disk-io burst. 30 minutes of breathing room is plenty.
+      const t = Template.fromStack(makeStack());
+      expect(userDataAsString(t)).toContain("OnCalendar=*-*-* 03:30:00");
+    });
+
+    test("Chroma tarball uploads to s3://.../chroma-nightly/", () => {
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("s3://${BUCKET}/chroma-nightly/");
     });
   });
 
