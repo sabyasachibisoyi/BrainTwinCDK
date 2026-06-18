@@ -79,13 +79,46 @@ npx cdk deploy --context region=us-west-2           # primary region
 # npx cdk deploy --context region=ap-south-1        # second region (Phase 5+)
 ```
 
+### Run tests
+
+The unit tests under `test/constructs/*.test.ts` assert the
+security-sensitive shape of every construct (RETAIN policies, IMDSv2
+required, public-access blocked, user-data contains the right bash
+snippets, etc.). A green run is the gate before any `cdk deploy`.
+
+```bash
+# Full suite — every construct (network / compute / storage / secrets / observability).
+# Takes ~60-90s. Use this before a deploy.
+npx jest
+# or equivalently:
+npm test
+
+# Single construct — fast feedback while iterating on one file.
+npx jest test/constructs/compute.test.ts
+npx jest test/constructs/storage.test.ts
+
+# Single test by name (regex match against `describe` + `test` strings).
+npx jest -t "Litestream"
+
+# Watch mode — re-run on file changes.
+npx jest --watch
+
+# CI-style output (no colors, no progress, useful for log capture).
+npx jest --ci --no-coverage
+```
+
+If `npx jest` errors with `Cannot find module …`, run `npm install`
+first — the test deps (jest, ts-jest, @types/jest) are in
+`devDependencies`.
+
 ### Pre-commit hook
 
 `scripts/git-hooks/pre-commit` runs `tsc --noEmit` (~8s) on every commit to
-catch type errors early. The full `npm test` (jest + cdk synth snapshots, ~3
-min) is too slow for every commit, so it runs in the release flow instead.
-Enable once per clone with the `git config core.hooksPath` line above; bypass a
-single commit with `git commit --no-verify`.
+catch type errors early. The full `npm test` (jest, ~60-90s) is too slow
+for every commit, so it runs in the release flow instead — but you
+should run it locally before `cdk deploy`. Enable the hook once per
+clone with the `git config core.hooksPath` line above; bypass a single
+commit with `git commit --no-verify`.
 
 ---
 

@@ -159,10 +159,15 @@ export class StorageConstruct extends Construct {
           abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
         },
         {
-          id: "chroma-nightly-expire-30d",
+          // M.5: 7d matches the Litestream WAL retention and is plenty
+          // for "I accidentally nuked Chroma yesterday." If we ever
+          // need a deeper Chroma history, the right answer is point-in-
+          // time restore via Litestream's chroma sister-db, not a
+          // longer tarball window.
+          id: "chroma-nightly-expire-7d",
           enabled: true,
           prefix: "chroma-nightly/",
-          expiration: cdk.Duration.days(30),
+          expiration: cdk.Duration.days(7),
           noncurrentVersionExpiration: cdk.Duration.days(7),
           abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
         },

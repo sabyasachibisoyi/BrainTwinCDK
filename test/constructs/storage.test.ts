@@ -119,16 +119,16 @@ describe("StorageConstruct", () => {
       });
     });
 
-    test("chroma-nightly/ prefix expires at 30 days", () => {
+    test("chroma-nightly/ prefix expires at 7 days (M.5: matches Litestream WAL retention)", () => {
       const t = Template.fromStack(makeStack());
       t.hasResourceProperties("AWS::S3::Bucket", {
         LifecycleConfiguration: Match.objectLike({
           Rules: Match.arrayWith([
             Match.objectLike({
-              Id: "chroma-nightly-expire-30d",
+              Id: "chroma-nightly-expire-7d",
               Status: "Enabled",
               Prefix: "chroma-nightly/",
-              ExpirationInDays: 30,
+              ExpirationInDays: 7,
             }),
           ]),
         }),

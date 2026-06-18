@@ -65,7 +65,7 @@ import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as ssm from "aws-cdk-lib/aws-ssm";
-import { Construct } from "constructs";
+import { Construct, IConstruct } from "constructs";
 import { NetworkConstruct } from "./network";
 import { ObservabilityConstruct } from "./observability";
 import { SecretsConstruct } from "./secrets";
@@ -313,6 +313,32 @@ export class ComputeConstruct extends Construct {
         requireImdsv2: true,
       });
 
+      // ----- IMDS hop limit bump for in-container AWS SDK access -----
+      // CDK's `requireImdsv2: true` shortcut produces a LaunchTemplate with
+      // HttpPutResponseHopLimit=1 (the EC2 default). That blocks any
+      // Docker container from reaching the IMDS endpoint, because the
+      // docker0 bridge counts as a network hop. Litestream (and any
+      // future containerized tool that uses the AWS SDK's default
+      // credential chain) falls back to IMDS and errors with
+      //   NoCredentialProviders: no valid providers in chain.
+      // Bump to 2 so containers can reach IMDS but the hop limit still
+      // bounds metadata-exfil blast radius. See §14 invariant.
+      // The `requireImdsv2: true` shortcut installs a CDK Aspect that
+      // synthesizes a LaunchTemplate at the same level as the instance.
+      // We can't override CFN properties until the Aspect has run — so
+      // we register a Prepare-phase callback that finds the LT after
+      // synthesis-time tree traversal and tacks our override on.
+      cdk.Aspects.of(instance).add({
+        visit(node: IConstruct) {
+          if (node instanceof ec2.CfnLaunchTemplate) {
+            node.addPropertyOverride(
+              "LaunchTemplateData.MetadataOptions.HttpPutResponseHopLimit",
+              2,
+            );
+          }
+        },
+      });
+
       // The boot-time refresh script reads both image-tag parameters, so
       // they must exist before the instance comes up.
       instance.node.addDependency(
@@ -393,7 +419,6 @@ export class ComputeConstruct extends Construct {
       // via Session Manager.
       "set -euxo pipefail",
       "exec > >(tee -a /var/log/braintwin-userdata.log | logger -t braintwin-userdata) 2>&1",
-      "echo '== braintwin user-data starting =='",
 
       // ----- Base packages -----
       "export DEBIAN_FRONTEND=noninteractive",
@@ -488,6 +513,108 @@ export class ComputeConstruct extends Construct {
       "chmod 644 /etc/caddy/cloudflare-origin-ca.pem",
 
       // =================================================================
+      // M.5 additions — CloudWatch Agent + nightly Chroma backup
+      // =================================================================
+      //
+      // Both are host-level (systemd) rather than containers because:
+      //   - CW Agent reads /proc to collect OS metrics; trivial outside
+      //     a container, awkward inside (needs --pid=host etc.).
+      //   - Chroma backup needs the same /var/lib/braintwin/data tree
+      //     that Docker has bind-mounted into the app; running on the
+      //     host gives a clean view without "stop containers, tar,
+      //     start containers" choreography.
+      //
+      // Litestream IS a container — it follows the SQLite WAL via Docker
+      // bind-mount and streams to S3. See the compose template below.
+
+      // ----- CloudWatch Agent (M.5) -----
+      // Installs the arm64 build, writes a config that collects only OS
+      // metrics (CPU/mem/disk/net) in the BrainTwin/System namespace.
+      // App-level metrics (per-route latency, recall phase timing) are
+      // deferred to a follow-up (M.11) — design doc §14.
+      //
+      // The `CloudWatchAgentServerPolicy` is already on the instance
+      // role from M.2.e, so the agent's PutMetricData calls just work.
+      "wget -q https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/arm64/latest/amazon-cloudwatch-agent.deb -O /tmp/cwagent.deb",
+      "dpkg -i /tmp/cwagent.deb",
+      "rm -f /tmp/cwagent.deb",
+      // CW Agent JSON compacted to one line to save user-data bytes
+      // (16KB EC2 hard limit — see M.12 follow-up). Same content as the
+      // pretty-printed form would have been; readable on disk via `jq`.
+      `echo '${JSON.stringify({
+        agent: { metrics_collection_interval: 60 },
+        metrics: {
+          namespace: "BrainTwin/System",
+          append_dimensions: { InstanceId: "${aws:InstanceId}" },
+          metrics_collected: {
+            cpu: {
+              measurement: ["cpu_usage_idle", "cpu_usage_iowait", "cpu_usage_user", "cpu_usage_system"],
+              metrics_collection_interval: 60,
+              totalcpu: true,
+            },
+            disk: {
+              measurement: ["used_percent", "inodes_free"],
+              resources: ["*"],
+              ignore_file_system_types: ["sysfs", "devtmpfs", "tmpfs", "overlay"],
+            },
+            diskio: { measurement: ["io_time", "write_bytes", "read_bytes", "writes", "reads"] },
+            mem: { measurement: ["mem_used_percent", "mem_available_percent"] },
+            netstat: { measurement: ["tcp_established", "tcp_time_wait"] },
+            swap: { measurement: ["swap_used_percent"] },
+          },
+        },
+      })}' > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json`,
+      "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s",
+
+      // ----- Nightly Chroma backup (M.5) -----
+      // Script + systemd timer. Runs at 03:30 UTC, 30 min after the
+      // DLM EBS snapshots (03:00) so the disk isn't busy with both at
+      // once. tarballs /var/lib/braintwin/data/chroma → S3, 7d retention
+      // is enforced by the S3 lifecycle rule in storage.ts.
+      //
+      // The 'quoted-EOF' on this heredoc preserves the script's $-vars
+      // literally so they get resolved inside the script when it runs,
+      // not at user-data time.
+      // Chroma backup script - inline comments stripped to save user-data
+      // bytes. Behavior unchanged. tar -C cds into the data dir first so
+      // the archive doesn't carry the host prefix.
+      "cat > /usr/local/bin/braintwin-chroma-backup.sh <<'CB_EOF'",
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'T=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")',
+      'R=$(curl -sH "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/meta-data/placement/region)',
+      'A=$(curl -sH "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)',
+      'BUCKET="braintwin-state-${A}-${R}"',
+      'F="/tmp/chroma-$(date -u +%Y%m%d-%H%M%S).tar.gz"',
+      'tar czf "$F" -C /var/lib/braintwin/data chroma',
+      'aws s3 cp "$F" "s3://${BUCKET}/chroma-nightly/$(basename $F)" --region "$R" --no-progress',
+      'rm -f "$F"',
+      "CB_EOF",
+      "chmod 0755 /usr/local/bin/braintwin-chroma-backup.sh",
+      // Systemd service unit (oneshot triggered by the timer below).
+      "cat > /etc/systemd/system/braintwin-chroma-backup.service <<'CS_EOF'",
+      "[Unit]",
+      "After=network-online.target docker.service",
+      "Wants=network-online.target",
+      "[Service]",
+      "Type=oneshot",
+      "ExecStart=/usr/local/bin/braintwin-chroma-backup.sh",
+      "CS_EOF",
+      // 03:30 UTC daily, 30min after DLM snapshots at 03:00 to avoid io
+      // contention. Persistent=true catches up if the box was off.
+      "cat > /etc/systemd/system/braintwin-chroma-backup.timer <<'CT_EOF'",
+      "[Unit]",
+      "[Timer]",
+      "OnCalendar=*-*-* 03:30:00",
+      "Persistent=true",
+      "[Install]",
+      "WantedBy=timers.target",
+      "CT_EOF",
+
+      "systemctl daemon-reload",
+      "systemctl enable --now braintwin-chroma-backup.timer",
+
+      // =================================================================
       // M.3.a additions — app bring-up
       // =================================================================
       //
@@ -536,7 +663,6 @@ export class ComputeConstruct extends Construct {
       "cat > /usr/local/bin/braintwin-refresh.sh <<'BRAINTWIN_REFRESH_EOF'",
       "#!/usr/bin/env bash",
       "set -euo pipefail",
-      "echo '== braintwin-refresh: regenerating compose from SSM image tags =='",
       // Resolve region + account from IMDSv2 — standalone so the script
       // works both at boot and when re-run later over SSM RunCommand.
       'IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")',
@@ -718,7 +844,76 @@ export class ComputeConstruct extends Construct {
       "    depends_on:",
       "      app:",
       "        condition: service_healthy",
+      "",
+      "  litestream:",
+      "    # M.5 — streams the SQLite WAL to S3 (7d retention). The",
+      "    # upstream image is small and stable; no plugins → no custom",
+      "    # build. AWS credentials come from the EC2 instance role via",
+      "    # IMDSv2 (Litestream auto-detects when no AWS_* env vars are",
+      "    # set). The bind-mount gives Litestream the same view of",
+      "    # /var/lib/braintwin/data the app has, so it can read the",
+      "    # WAL frames as the app writes them.",
+      "    image: litestream/litestream:0.3.13",
+      "    container_name: braintwin-litestream",
+      // Match the host file owner (UID 10001 = braintwin). The Litestream
+      // image runs as root by default; with `cap_drop: ALL` below, root
+      // loses CAP_DAC_OVERRIDE and can no longer bypass file permissions,
+      // so it can't write the `_litestream_seq` table to the DB owned by
+      // 10001. Running as 10001 sidesteps the capability dance entirely.
+      // See §14 in the design doc.
+      '    user: "10001:10001"',
+      "    restart: unless-stopped",
+      "    security_opt:",
+      "      - no-new-privileges:true",
+      "    cap_drop:",
+      "      - ALL",
+      "    volumes:",
+      "      - /etc/braintwin/litestream.yml:/etc/litestream.yml:ro",
+      "      - /var/lib/braintwin/data:/data",
+      "    command:",
+      "      - replicate",
+      "      - -config",
+      "      - /etc/litestream.yml",
+      "    logging:",
+      "      # Route to the app log group with a 'litestream' stream so",
+      "      # 'aws logs tail /braintwin/app' can show app + Litestream",
+      "      # together (handy for 'why is recall slow? is the WAL",
+      "      # checkpoint stuck?' debugging). Worst case, separate it to",
+      "      # /braintwin/litestream later — that's another log group +",
+      "      # one line change.",
+      "      driver: awslogs",
+      "      options:",
+      "        awslogs-region: $REGION",
+      "        awslogs-group: $APP_LOG_GROUP",
+      "        awslogs-stream: litestream",
+      "    depends_on:",
+      "      # Don't start until the app has created the DB file.",
+      "      app:",
+      "        condition: service_healthy",
       "COMPOSE_EOF",
+      "",
+      // ----- Write litestream.yml (regenerated each refresh) -----
+      // The S3 bucket name embeds account + region resolved at runtime.
+      // Bash $REGION / $ACCOUNT_ID are already resolved earlier in this
+      // refresh script (see IMDSv2 calls).
+      "cat > /etc/braintwin/litestream.yml <<LITESTREAM_EOF",
+      "# Generated by BrainTwinCDK at refresh time. Do NOT edit by hand.",
+      "dbs:",
+      "  - path: /data/braintwin.db",
+      "    replicas:",
+      "      - type: s3",
+      "        bucket: braintwin-state-$ACCOUNT_ID-$REGION",
+      "        path: litestream/braintwin.db",
+      "        region: $REGION",
+      "        # 168h = 7 days. Matches the s3 lifecycle rule on the",
+      "        # litestream/ prefix in storage.ts so we don't keep paying",
+      "        # to store frames the bucket policy will expire anyway.",
+      "        retention: 168h",
+      "        # Hourly snapshots (the default) + WAL replication every",
+      "        # 1s. Snapshots compact older WAL into a single SQLite",
+      "        # file in S3 to speed up restore.",
+      "        snapshot-interval: 1h",
+      "LITESTREAM_EOF",
       "",
       // Pull + (re)start. compose v2 pulls in parallel and only recreates
       // containers whose image actually changed, so an unchanged service
@@ -727,7 +922,6 @@ export class ComputeConstruct extends Construct {
       "docker compose pull",
       "docker compose up -d",
       "docker compose ps",
-      "echo '== braintwin-refresh: done =='",
       "BRAINTWIN_REFRESH_EOF",
       "chmod 0755 /usr/local/bin/braintwin-refresh.sh",
 
@@ -785,9 +979,6 @@ export class ComputeConstruct extends Construct {
       // exact script over SSM RunCommand (scripts/deploy.sh) instead of
       // replacing the instance.
       "/usr/local/bin/braintwin-refresh.sh",
-
-      // ----- Done -----
-      "echo '== braintwin user-data complete =='",
     );
 
     return ud;
