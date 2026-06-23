@@ -61,9 +61,11 @@
  * 30-day retention set in observability.ts; expect <$2/month for typical
  * single-user traffic. Synth-and-don't-deploy is free.
  */
+import * as path from "path";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as s3assets from "aws-cdk-lib/aws-s3-assets";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct, IConstruct } from "constructs";
 import { NetworkConstruct } from "./network";
@@ -130,6 +132,12 @@ export class ComputeConstruct extends Construct {
    * this parameter and never replaces the instance. See the "Option A"
    * note in `_buildUserData`.
    */
+  /** M.12 — static config files served from the CDK bootstrap bucket. */
+  private readonly cwAgentConfigAsset: s3assets.Asset;
+  private readonly chromaBackupScriptAsset: s3assets.Asset;
+  private readonly chromaBackupServiceAsset: s3assets.Asset;
+  private readonly chromaBackupTimerAsset: s3assets.Asset;
+
   public readonly imageTagParameter: ssm.StringParameter;
 
   /** SSM String parameter holding the ECR Caddy image tag. See above. */
@@ -212,6 +220,63 @@ export class ComputeConstruct extends Construct {
     // Scoped read: GetParameter on exactly these two parameter ARNs.
     this.imageTagParameter.grantRead(this.instanceRole);
     this.caddyImageTagParameter.grantRead(this.instanceRole);
+
+    // -----------------------------------------------------------------
+    // 1.5) Static config files as s3.Asset (M.12, Phase 4.0.6.1)
+    //
+    // EC2 user-data is hard-capped at 16 KB after base64 encoding. The
+    // pre-M.12 user-data was within ~50 bytes of the limit because we
+    // were embedding the CW Agent JSON, the chroma backup script, and
+    // its systemd units inline. None of those files have CDK-time
+    // substitutions, so they belong out of user-data entirely.
+    //
+    // Each asset:
+    //   - is hashed by content; the same file produces the same S3 key
+    //   - lives in the CDK bootstrap bucket
+    //     (cdk-hnb659fds-assets-<account>-<region>)
+    //   - grants read on the precise key path to the instance role
+    //   - exposes s3BucketName / s3ObjectKey tokens that resolve at
+    //     deploy time so user-data can fetch via `aws s3 cp`
+    //
+    // What stays inline in user-data (and why):
+    //   - Caddyfile — has two CDK config substitutions
+    //     (publicHostname, budgetAlertEmail); externalizing would
+    //     require runtime env substitution. M.12.b candidate.
+    //   - litestream.yml — has refresh-time $ACCOUNT_ID/$REGION
+    //     substitution. Small enough that the savings aren't worth
+    //     the complexity.
+    //   - docker-compose.yml — heavily templated by refresh.sh;
+    //     keep there.
+    //   - Cloudflare Origin Pull CA fetch — genuinely runtime
+    //     (a remote curl).
+    // -----------------------------------------------------------------
+    const assetsDir = path.join(__dirname, "..", "..", "assets");
+    this.cwAgentConfigAsset = new s3assets.Asset(this, "CWAgentConfigAsset", {
+      path: path.join(assetsDir, "amazon-cloudwatch-agent.json"),
+    });
+    this.chromaBackupScriptAsset = new s3assets.Asset(
+      this,
+      "ChromaBackupScriptAsset",
+      { path: path.join(assetsDir, "braintwin-chroma-backup.sh") },
+    );
+    this.chromaBackupServiceAsset = new s3assets.Asset(
+      this,
+      "ChromaBackupServiceAsset",
+      { path: path.join(assetsDir, "braintwin-chroma-backup.service") },
+    );
+    this.chromaBackupTimerAsset = new s3assets.Asset(
+      this,
+      "ChromaBackupTimerAsset",
+      { path: path.join(assetsDir, "braintwin-chroma-backup.timer") },
+    );
+    for (const asset of [
+      this.cwAgentConfigAsset,
+      this.chromaBackupScriptAsset,
+      this.chromaBackupServiceAsset,
+      this.chromaBackupTimerAsset,
+    ]) {
+      asset.grantRead(this.instanceRole);
+    }
 
     // -----------------------------------------------------------------
     // 2) AMI lookup — Canonical Ubuntu 22.04 LTS, arm64 (Graviton).
@@ -426,6 +491,29 @@ export class ComputeConstruct extends Construct {
       "apt-get install -y --no-install-recommends \\",
       "  ca-certificates curl gnupg lsb-release jq awscli e2fsprogs",
 
+      // ----- Resolve region from IMDS (needed by `aws s3 cp` for the
+      // M.12 asset downloads below). IMDSv2 token + region call; the
+      // refresh script later redefines REGION inside its own scope.
+      'IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")',
+      'REGION=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)',
+      'export AWS_DEFAULT_REGION="$REGION"',
+
+      // ----- s3cp_retry: download an M.12 asset with backoff -----
+      // These files used to be inlined in user-data (guaranteed
+      // present, no network). Fetching them from S3 at boot adds a
+      // transient-failure surface — a slow NAT warm-up or an S3 blip
+      // would otherwise abort the whole user-data run under `set -e`.
+      // 5 attempts with backoff, mirroring the Cloudflare CA fetch
+      // below, then fail loud. Usage: s3cp_retry <s3-url> <dest>.
+      "s3cp_retry() {",
+      "  for i in $(seq 1 5); do",
+      '    aws s3 cp "$1" "$2" && return 0',
+      '    echo "s3 cp $1 failed (attempt $i); retrying in 5s…"',
+      "    sleep 5",
+      "  done",
+      '  echo "s3 cp $1 failed after 5 attempts; aborting"; return 1',
+      "}",
+
       // ----- Docker (from Docker's apt repo, not Ubuntu's older fork) -----
       "install -m 0755 -d /etc/apt/keyrings",
       // --yes makes gpg --dearmor non-interactive when the target file
@@ -538,32 +626,11 @@ export class ComputeConstruct extends Construct {
       "wget -q https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/arm64/latest/amazon-cloudwatch-agent.deb -O /tmp/cwagent.deb",
       "dpkg -i /tmp/cwagent.deb",
       "rm -f /tmp/cwagent.deb",
-      // CW Agent JSON compacted to one line to save user-data bytes
-      // (16KB EC2 hard limit — see M.12 follow-up). Same content as the
-      // pretty-printed form would have been; readable on disk via `jq`.
-      `echo '${JSON.stringify({
-        agent: { metrics_collection_interval: 60 },
-        metrics: {
-          namespace: "BrainTwin/System",
-          append_dimensions: { InstanceId: "${aws:InstanceId}" },
-          metrics_collected: {
-            cpu: {
-              measurement: ["cpu_usage_idle", "cpu_usage_iowait", "cpu_usage_user", "cpu_usage_system"],
-              metrics_collection_interval: 60,
-              totalcpu: true,
-            },
-            disk: {
-              measurement: ["used_percent", "inodes_free"],
-              resources: ["*"],
-              ignore_file_system_types: ["sysfs", "devtmpfs", "tmpfs", "overlay"],
-            },
-            diskio: { measurement: ["io_time", "write_bytes", "read_bytes", "writes", "reads"] },
-            mem: { measurement: ["mem_used_percent", "mem_available_percent"] },
-            netstat: { measurement: ["tcp_established", "tcp_time_wait"] },
-            swap: { measurement: ["swap_used_percent"] },
-          },
-        },
-      })}' > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json`,
+      // CW Agent JSON config from s3.Asset (M.12). The asset hash
+      // changes whenever the JSON does, forcing a re-fetch on the
+      // next boot; routine deploys with no config change re-fetch
+      // the same key (idempotent).
+      `s3cp_retry s3://${this.cwAgentConfigAsset.s3BucketName}/${this.cwAgentConfigAsset.s3ObjectKey} /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json`,
       "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s",
 
       // ----- Nightly Chroma backup (M.5) -----
@@ -575,41 +642,13 @@ export class ComputeConstruct extends Construct {
       // The 'quoted-EOF' on this heredoc preserves the script's $-vars
       // literally so they get resolved inside the script when it runs,
       // not at user-data time.
-      // Chroma backup script - inline comments stripped to save user-data
-      // bytes. Behavior unchanged. tar -C cds into the data dir first so
-      // the archive doesn't carry the host prefix.
-      "cat > /usr/local/bin/braintwin-chroma-backup.sh <<'CB_EOF'",
-      "#!/usr/bin/env bash",
-      "set -euo pipefail",
-      'T=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")',
-      'R=$(curl -sH "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/meta-data/placement/region)',
-      'A=$(curl -sH "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)',
-      'BUCKET="braintwin-state-${A}-${R}"',
-      'F="/tmp/chroma-$(date -u +%Y%m%d-%H%M%S).tar.gz"',
-      'tar czf "$F" -C /var/lib/braintwin/data chroma',
-      'aws s3 cp "$F" "s3://${BUCKET}/chroma-nightly/$(basename $F)" --region "$R" --no-progress',
-      'rm -f "$F"',
-      "CB_EOF",
+      // Chroma backup script + systemd units from s3.Asset (M.12).
+      // Each download is content-addressed; redeploying with no asset
+      // change re-fetches the same S3 key (idempotent).
+      `s3cp_retry s3://${this.chromaBackupScriptAsset.s3BucketName}/${this.chromaBackupScriptAsset.s3ObjectKey} /usr/local/bin/braintwin-chroma-backup.sh`,
       "chmod 0755 /usr/local/bin/braintwin-chroma-backup.sh",
-      // Systemd service unit (oneshot triggered by the timer below).
-      "cat > /etc/systemd/system/braintwin-chroma-backup.service <<'CS_EOF'",
-      "[Unit]",
-      "After=network-online.target docker.service",
-      "Wants=network-online.target",
-      "[Service]",
-      "Type=oneshot",
-      "ExecStart=/usr/local/bin/braintwin-chroma-backup.sh",
-      "CS_EOF",
-      // 03:30 UTC daily, 30min after DLM snapshots at 03:00 to avoid io
-      // contention. Persistent=true catches up if the box was off.
-      "cat > /etc/systemd/system/braintwin-chroma-backup.timer <<'CT_EOF'",
-      "[Unit]",
-      "[Timer]",
-      "OnCalendar=*-*-* 03:30:00",
-      "Persistent=true",
-      "[Install]",
-      "WantedBy=timers.target",
-      "CT_EOF",
+      `s3cp_retry s3://${this.chromaBackupServiceAsset.s3BucketName}/${this.chromaBackupServiceAsset.s3ObjectKey} /etc/systemd/system/braintwin-chroma-backup.service`,
+      `s3cp_retry s3://${this.chromaBackupTimerAsset.s3BucketName}/${this.chromaBackupTimerAsset.s3ObjectKey} /etc/systemd/system/braintwin-chroma-backup.timer`,
 
       "systemctl daemon-reload",
       "systemctl enable --now braintwin-chroma-backup.timer",
@@ -792,6 +831,31 @@ export class ComputeConstruct extends Construct {
       "        awslogs-group: $BOT_LOG_GROUP",
       "        awslogs-stream: bot",
       '    command: ["python", "-m", "backend.telegram_bot.bot"]',
+      // Bot is a Telegram polling worker, not a web server. The app
+      // image's Dockerfile HEALTHCHECK targets uvicorn on :8000, which
+      // the bot never starts - so the inherited check would always
+      // fail and the container would perpetually report "unhealthy."
+      //
+      // First attempt used pgrep but the python:slim base doesn't ship
+      // procps. Switched to grep against /proc/*/cmdline — kernel-
+      // provided pseudo-files, always present on Linux, zero image
+      // additions needed. exit 0 if any running process's command
+      // line contains "backend.telegram_bot"; exit 1 otherwise.
+      // See phase4.0.6.1-polish-design.md §2.0.
+      //
+      // The pattern is bracketed ([b]ackend) so the check can't match
+      // ITSELF: docker runs the test via `sh -c "grep …"`, and that
+      // shell's own /proc/<pid>/cmdline contains the pattern string.
+      // A plain `backend.telegram_bot` would match the shell running
+      // the probe and report healthy even when the bot is dead. The
+      // bracket makes the literal cmdline ("[b]ackend…") not match the
+      // regex, while the real `python -m backend.telegram_bot.bot`
+      // process still does.
+      "    healthcheck:",
+      '      test: ["CMD-SHELL", "grep -l [b]ackend.telegram_bot /proc/*/cmdline >/dev/null 2>&1"]',
+      // interval (30s), timeout (30s), retries (3) all match docker
+      // compose defaults — explicit lines elided to save user-data bytes.
+      // Adjust here if the defaults stop being right.
       "    depends_on:",
       "      app:",
       "        condition: service_healthy",

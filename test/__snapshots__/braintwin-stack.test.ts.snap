@@ -12,7 +12,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
     "ComputePrimaryInstanceId5A264371": {
       "Description": "Primary EC2 instance ID. Use with \`aws ssm start-session --target <id>\` to get a shell on the box (no SSH).",
       "Value": {
-        "Ref": "ComputeInstance03D945A8Cb87f6fb5e799302d",
+        "Ref": "ComputeInstance03D945A8C77928c873cb60826",
       },
     },
     "ConfiguredCaddyImageTag": {
@@ -188,7 +188,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
       "Properties": {
         "Device": "/dev/sdf",
         "InstanceId": {
-          "Ref": "ComputeInstance03D945A8Cb87f6fb5e799302d",
+          "Ref": "ComputeInstance03D945A8C77928c873cb60826",
         },
         "VolumeId": {
           "Ref": "ComputeEbsVolume07C044D41",
@@ -239,7 +239,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
           ],
         },
         "InstanceId": {
-          "Ref": "ComputeInstance03D945A8Cb87f6fb5e799302d",
+          "Ref": "ComputeInstance03D945A8C77928c873cb60826",
         },
       },
       "Type": "AWS::EC2::EIPAssociation",
@@ -259,7 +259,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
       },
       "Type": "AWS::SSM::Parameter",
     },
-    "ComputeInstance03D945A8Cb87f6fb5e799302d": {
+    "ComputeInstance03D945A8C77928c873cb60826": {
       "DependsOn": [
         "ComputeCaddyImageTagParam02F625DC",
         "ComputeImageTagParam76ECD74D",
@@ -340,6 +340,17 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y --no-install-recommends \\
   ca-certificates curl gnupg lsb-release jq awscli e2fsprogs
+IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+REGION=$(curl -sH "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+export AWS_DEFAULT_REGION="$REGION"
+s3cp_retry() {
+  for i in $(seq 1 5); do
+    aws s3 cp "$1" "$2" && return 0
+    echo "s3 cp $1 failed (attempt $i); retrying in 5s…"
+    sleep 5
+  done
+  echo "s3 cp $1 failed after 5 attempts; aborting"; return 1
+}
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
 echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
@@ -381,37 +392,12 @@ chmod 644 /etc/caddy/cloudflare-origin-ca.pem
 wget -q https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/arm64/latest/amazon-cloudwatch-agent.deb -O /tmp/cwagent.deb
 dpkg -i /tmp/cwagent.deb
 rm -f /tmp/cwagent.deb
-echo '{"agent":{"metrics_collection_interval":60},"metrics":{"namespace":"BrainTwin/System","append_dimensions":{"InstanceId":"\${aws:InstanceId}"},"metrics_collected":{"cpu":{"measurement":["cpu_usage_idle","cpu_usage_iowait","cpu_usage_user","cpu_usage_system"],"metrics_collection_interval":60,"totalcpu":true},"disk":{"measurement":["used_percent","inodes_free"],"resources":["*"],"ignore_file_system_types":["sysfs","devtmpfs","tmpfs","overlay"]},"diskio":{"measurement":["io_time","write_bytes","read_bytes","writes","reads"]},"mem":{"measurement":["mem_used_percent","mem_available_percent"]},"netstat":{"measurement":["tcp_established","tcp_time_wait"]},"swap":{"measurement":["swap_used_percent"]}}}}' > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+s3cp_retry s3://cdk-hnb659fds-assets-123456789012-us-west-2/a6fccb3664b6f3e83f07dd13cd5cd83285ef23e9ac33ef2f84e7387c2bb9f787.json /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
 /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s
-cat > /usr/local/bin/braintwin-chroma-backup.sh <<'CB_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-T=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-R=$(curl -sH "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/meta-data/placement/region)
-A=$(curl -sH "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)
-BUCKET="braintwin-state-\${A}-\${R}"
-F="/tmp/chroma-$(date -u +%Y%m%d-%H%M%S).tar.gz"
-tar czf "$F" -C /var/lib/braintwin/data chroma
-aws s3 cp "$F" "s3://\${BUCKET}/chroma-nightly/$(basename $F)" --region "$R" --no-progress
-rm -f "$F"
-CB_EOF
+s3cp_retry s3://cdk-hnb659fds-assets-123456789012-us-west-2/25f2474583c2a7439faaf64062685ab684286ecb4afcb34f23fc9a52fb3f0eea.sh /usr/local/bin/braintwin-chroma-backup.sh
 chmod 0755 /usr/local/bin/braintwin-chroma-backup.sh
-cat > /etc/systemd/system/braintwin-chroma-backup.service <<'CS_EOF'
-[Unit]
-After=network-online.target docker.service
-Wants=network-online.target
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/braintwin-chroma-backup.sh
-CS_EOF
-cat > /etc/systemd/system/braintwin-chroma-backup.timer <<'CT_EOF'
-[Unit]
-[Timer]
-OnCalendar=*-*-* 03:30:00
-Persistent=true
-[Install]
-WantedBy=timers.target
-CT_EOF
+s3cp_retry s3://cdk-hnb659fds-assets-123456789012-us-west-2/873cffc47c05d00879e477e557539299e5d76d2bec9e5ed02f173a4cd590ed97.service /etc/systemd/system/braintwin-chroma-backup.service
+s3cp_retry s3://cdk-hnb659fds-assets-123456789012-us-west-2/c85c5c6b55fe4c38663709b55d711522482ab95f2670b21ed285604ab8694496.timer /etc/systemd/system/braintwin-chroma-backup.timer
 systemctl daemon-reload
 systemctl enable --now braintwin-chroma-backup.timer
 IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
@@ -560,6 +546,8 @@ services:
         awslogs-group: $BOT_LOG_GROUP
         awslogs-stream: bot
     command: ["python", "-m", "backend.telegram_bot.bot"]
+    healthcheck:
+      test: ["CMD-SHELL", "grep -l [b]ackend.telegram_bot /proc/*/cmdline >/dev/null 2>&1"]
     depends_on:
       app:
         condition: service_healthy
@@ -871,6 +859,40 @@ CADDYFILE_EOF
                   ],
                 ],
               },
+            },
+            {
+              "Action": [
+                "s3:GetObject*",
+                "s3:GetBucket*",
+                "s3:List*",
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":s3:::cdk-hnb659fds-assets-123456789012-us-west-2",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":s3:::cdk-hnb659fds-assets-123456789012-us-west-2/*",
+                    ],
+                  ],
+                },
+              ],
             },
             {
               "Action": [
