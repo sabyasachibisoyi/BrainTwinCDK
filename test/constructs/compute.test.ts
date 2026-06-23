@@ -382,6 +382,30 @@ describe("ComputeConstruct", () => {
       expect(userDataAsString(t)).toContain("condition: service_healthy");
     });
 
+    test("bot has a /proc-cmdline healthcheck (not the inherited uvicorn HTTP probe)", () => {
+      // 4.0.6.1 M.0 — the bot service inherits the app Dockerfile's
+      // HEALTHCHECK against http://localhost:8000/health, which the
+      // bot never serves. Override with a process check so
+      // `docker compose ps` stops reporting "Up (unhealthy)" forever.
+      //
+      // We grep against /proc/*/cmdline rather than pgrep because the
+      // python:slim base image doesn't include procps. /proc is
+      // kernel-provided, always present on Linux. If anyone reverts
+      // this back to pgrep without also adding procps to the image,
+      // the bot goes back to perpetually-unhealthy.
+      //
+      // The pattern MUST be bracketed ([b]ackend) so the probe can't
+      // match the shell running it (whose own cmdline contains the
+      // pattern string) and report healthy when the bot is dead. The
+      // unbracketed `backend.telegram_bot` is the false-positive bug.
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("/proc/*/cmdline");
+      expect(s).toContain("[b]ackend.telegram_bot");
+      // Guard the self-matching unbracketed form from regressing in.
+      expect(s).not.toContain("grep -l backend.telegram_bot");
+    });
+
     test("ends with `docker compose pull` then `docker compose up -d`", () => {
       const t = Template.fromStack(makeStack());
       const s = userDataAsString(t);
@@ -609,23 +633,33 @@ describe("ComputeConstruct", () => {
     });
 
     test("CW Agent collects CPU + memory + disk + diskio + netstat + swap", () => {
-      const t = Template.fromStack(makeStack());
-      const s = userDataAsString(t);
-      // JSON-stringified template double-escapes inner quotes, so we
-      // can't search for the literal `"cpu":`. The agent JSON's metric
-      // names are still unique enough on their own.
-      expect(s).toContain("cpu_usage_idle");
-      expect(s).toContain("mem_used_percent");
-      expect(s).toContain("used_percent");
-      expect(s).toContain("io_time");
-      expect(s).toContain("tcp_established");
-      expect(s).toContain("swap_used_percent");
+      // M.12 — the JSON config moved out of user-data into an s3.Asset.
+      // The test now asserts against the source-of-truth file rather
+      // than the synthesized user-data string. Any regression here
+      // means the metric set actually shipping differs from intent.
+      const fs = require("fs");
+      const path = require("path");
+      const cfg = fs.readFileSync(
+        path.join(__dirname, "..", "..", "assets", "amazon-cloudwatch-agent.json"),
+        "utf8",
+      );
+      expect(cfg).toContain("cpu_usage_idle");
+      expect(cfg).toContain("mem_used_percent");
+      expect(cfg).toContain("used_percent");
+      expect(cfg).toContain("io_time");
+      expect(cfg).toContain("tcp_established");
+      expect(cfg).toContain("swap_used_percent");
     });
 
     test("CW Agent metrics land in the BrainTwin/System namespace", () => {
-      // Same escaping wrinkle. Search for the unquoted form.
-      const t = Template.fromStack(makeStack());
-      expect(userDataAsString(t)).toContain("BrainTwin/System");
+      // M.12 — assert against the asset file, same reason as above.
+      const fs = require("fs");
+      const path = require("path");
+      const cfg = fs.readFileSync(
+        path.join(__dirname, "..", "..", "assets", "amazon-cloudwatch-agent.json"),
+        "utf8",
+      );
+      expect(cfg).toContain("BrainTwin/System");
     });
 
     test("Chroma backup script + systemd timer are installed", () => {
@@ -637,16 +671,79 @@ describe("ComputeConstruct", () => {
     });
 
     test("Chroma timer fires at 03:30 UTC (30min after DLM snapshots at 03:00)", () => {
+      // M.12 — timer file is now an s3.Asset, assert against source.
       // Stacking the snapshot + the tarball on the same minute would
       // double the disk-io burst. 30 minutes of breathing room is plenty.
-      const t = Template.fromStack(makeStack());
-      expect(userDataAsString(t)).toContain("OnCalendar=*-*-* 03:30:00");
+      const fs = require("fs");
+      const path = require("path");
+      const timer = fs.readFileSync(
+        path.join(__dirname, "..", "..", "assets", "braintwin-chroma-backup.timer"),
+        "utf8",
+      );
+      expect(timer).toContain("OnCalendar=*-*-* 03:30:00");
     });
 
-    test("Chroma tarball uploads to s3://.../chroma-nightly/", () => {
+    test("Chroma tarball uploads to s3://...-state-...-region/chroma-nightly/", () => {
+      // M.12 — backup script is now an s3.Asset. Assert the script body
+      // resolves the bucket name from IMDS at runtime and writes to the
+      // chroma-nightly/ prefix.
+      const fs = require("fs");
+      const path = require("path");
+      const script = fs.readFileSync(
+        path.join(__dirname, "..", "..", "assets", "braintwin-chroma-backup.sh"),
+        "utf8",
+      );
+      expect(script).toContain("braintwin-state-");
+      expect(script).toContain("chroma-nightly/");
+      expect(script).toContain("169.254.169.254"); // IMDS for account/region
+    });
+
+    test("M.12: heavy config files are served from s3.Asset, not inlined", () => {
+      // Regression guard for M.12. If anyone reverts the s3.Asset
+      // refactor by re-embedding these files in user-data, the
+      // user-data will blow past the 16 KB limit again.
+      //
+      // We can't easily match `s3cp_retry s3://BUCKET/KEY DEST` as a
+      // single regex because the JSON-stringified template breaks the
+      // s3:// URL across CDK Ref fragments. Instead, count the download
+      // commands and assert each destination path is present. Downloads
+      // go through the s3cp_retry helper (backoff wrapper) rather than a
+      // bare `aws s3 cp`.
       const t = Template.fromStack(makeStack());
       const s = userDataAsString(t);
-      expect(s).toContain("s3://${BUCKET}/chroma-nightly/");
+      // Expect at least 4 `s3cp_retry s3://` occurrences (one per asset).
+      // The substring is stable even though the bucket/key are tokens.
+      const cpCount = (s.match(/s3cp_retry s3:/g) || []).length;
+      expect(cpCount).toBeGreaterThanOrEqual(4);
+      // The retry helper itself must be defined before any use.
+      expect(s).toContain("s3cp_retry() {");
+      // Each target path must appear.
+      expect(s).toContain("/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json");
+      expect(s).toContain("/usr/local/bin/braintwin-chroma-backup.sh");
+      expect(s).toContain("/etc/systemd/system/braintwin-chroma-backup.service");
+      expect(s).toContain("/etc/systemd/system/braintwin-chroma-backup.timer");
+      // And the JSON config must NOT be inlined any more — the canary
+      // strings from the old inline content (the JSON namespace literal
+      // and the chroma backup shebang) should be absent.
+      expect(s).not.toContain("metrics_collection_interval");
+      expect(s).not.toContain("CB_EOF");
+    });
+
+    test("M.12: instance role can read assets from the CDK bootstrap bucket", () => {
+      // The Asset.grantRead() calls produce an IAM policy that gives
+      // the instance role s3:GetObject on the bootstrap bucket's
+      // cdk-hnb659fds-assets-... bucket. Without this, every asset
+      // cp in user-data 403s at boot and the instance never starts.
+      const t = Template.fromStack(makeStack());
+      const policies = t.findResources("AWS::IAM::Policy");
+      const concat = Object.values(policies)
+        .map((p) => JSON.stringify(p.Properties.PolicyDocument))
+        .join("\n");
+      // CDK references the bootstrap bucket by its synthesized name
+      // (which contains "cdk-hnb659fds-assets-" - the default qualifier
+      // for the bootstrap stack).
+      expect(concat).toContain("cdk-hnb659fds-assets-");
+      expect(concat).toContain("s3:GetObject");
     });
   });
 
