@@ -142,12 +142,20 @@ export class SecretsConstruct extends Construct {
    * Attach IAM permissions to `role` for reading every parameter this
    * construct manages, plus the KMS decrypt needed for SecureStrings.
    *
-   * Scoped: GetParameter is restricted to exactly the four ARNs;
-   * Decrypt is restricted to the AWS-managed SSM KMS key. The role
-   * cannot read OTHER projects' SSM parameters from this grant.
+   * Scoped: GetParameter is restricted to exactly the five secret ARNs,
+   * GetParametersByPath to /braintwin/*, and Decrypt to the AWS-managed
+   * SSM KMS key. The role cannot read OTHER projects' SSM parameters.
    */
   public grantReadAll(role: iam.IRole): void {
-    // 1. Read the encrypted blob from SSM
+    const { partition, region, account } = cdk.Stack.of(this);
+
+    // 1. GetParameter on exactly the five secret ARNs. As of M.10 the
+    //    refresh script reads these via GetParametersByPath (statement
+    //    2), so nothing in user-data calls GetParameter on them today —
+    //    this is kept as defense for ad-hoc ops (`aws ssm get-parameter
+    //    --name /braintwin/anthropic_key`). NOTE: image_tag /
+    //    caddy_image_tag are NOT covered here; they get their own
+    //    grantRead() in compute.ts.
     role.addToPrincipalPolicy(
       new iam.PolicyStatement({
         actions: ["ssm:GetParameter", "ssm:GetParameters"],
@@ -155,13 +163,28 @@ export class SecretsConstruct extends Construct {
       }),
     );
 
-    // 2. Decrypt the SecureString blob via KMS
+    // 2. (M.10) Allow GetParametersByPath on /braintwin/* so the refresh
+    //    script can discover the full secret bag in one call. This is
+    //    the action that makes "adding a new secret = put-secrets.sh +
+    //    refresh.sh" possible without a CDK edit + instance replacement.
+    //    The resource path covers any current/future parameter under
+    //    /braintwin/, not the rest of the account.
+    role.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        actions: ["ssm:GetParametersByPath"],
+        resources: [
+          `arn:${partition}:ssm:${region}:${account}:parameter/braintwin`,
+          `arn:${partition}:ssm:${region}:${account}:parameter/braintwin/*`,
+        ],
+      }),
+    );
+
+    // 3. Decrypt the SecureString blob via KMS
     //    The parameters use the AWS-managed key `alias/aws/ssm`, whose
     //    key ID isn't referenceable from CloudFormation. So we allow
     //    Decrypt on any key in the account BUT require the call to come
     //    through SSM (kms:ViaService) — which only the SSM-managed key
     //    path satisfies for GetParameter --with-decryption.
-    const { partition, region, account } = cdk.Stack.of(this);
     role.addToPrincipalPolicy(
       new iam.PolicyStatement({
         actions: ["kms:Decrypt"],

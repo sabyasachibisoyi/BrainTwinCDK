@@ -132,6 +132,40 @@ describe("SecretsConstruct", () => {
         }
       }
     });
+
+    test("M.10: instance role gets ssm:GetParametersByPath scoped to /braintwin/*", () => {
+      // The discovery pattern needs GetParametersByPath in addition to
+      // GetParameter. Without this grant, the refresh script's single
+      // `aws ssm get-parameters-by-path` call 403s and boot fails.
+      // The scope is /braintwin and /braintwin/* (path + everything
+      // under it) — broad enough to discover any future param the
+      // operator adds via put-secrets.sh, but tight enough that the
+      // EC2 can't enumerate the rest of the account's SSM tree.
+      const t = Template.fromStack(makeStack());
+      const policies = t.findResources("AWS::IAM::Policy");
+      const concat = Object.values(policies)
+        .map((p) => JSON.stringify(p.Properties.PolicyDocument))
+        .join("\n");
+      expect(concat).toContain("ssm:GetParametersByPath");
+      expect(concat).toContain("parameter/braintwin");
+      // The path-scoped ARN must NOT be a wildcard on ssm tree-roots
+      // (e.g., `parameter/*`). If someone widens it accidentally,
+      // discovery starts pulling secrets from OTHER apps.
+      for (const policy of Object.values(policies)) {
+        const statements = policy.Properties.PolicyDocument.Statement;
+        for (const stmt of statements) {
+          const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
+          if (!actions.includes("ssm:GetParametersByPath")) continue;
+          const resources = Array.isArray(stmt.Resource) ? stmt.Resource : [stmt.Resource];
+          for (const r of resources) {
+            const rs = typeof r === "string" ? r : JSON.stringify(r);
+            // Must mention "braintwin"; must NOT be a bare "*".
+            expect(rs).not.toBe("*");
+            expect(rs).toContain("braintwin");
+          }
+        }
+      }
+    });
   });
 
   describe("KMS decrypt — scoped via service", () => {
