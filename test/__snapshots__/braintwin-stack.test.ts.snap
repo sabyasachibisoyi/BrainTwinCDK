@@ -32,6 +32,20 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
         ],
       },
     },
+    "ObservabilityAppDashboardUrl902F47D9": {
+      "Description": "CloudWatch dashboard for app-level metrics (M.11). Open this URL to see per-route HTTP latency, Anthropic call timing, and Chroma query latency.",
+      "Value": {
+        "Fn::Join": [
+          "",
+          [
+            "https://us-west-2.console.aws.amazon.com/cloudwatch/home?region=us-west-2#dashboards:name=",
+            {
+              "Ref": "ObservabilityAppDashboard5754F798",
+            },
+          ],
+        ],
+      },
+    },
     "ObservabilityAppLogGroupName154411FD": {
       "Description": "CloudWatch log group for the FastAPI app. Tail via: aws logs tail /braintwin/app --follow --profile braintwin",
       "Value": "/braintwin/app",
@@ -1596,6 +1610,44 @@ CADDYFILE_EOF
         },
       },
       "Type": "AWS::EC2::VPCGatewayAttachment",
+    },
+    "ObservabilityAppDashboard5754F798": {
+      "Properties": {
+        "DashboardBody": {
+          "Fn::Join": [
+            "",
+            [
+              "{"start":"-PT3H","widgets":[{"type":"metric","width":12,"height":6,"x":0,"y":0,"properties":{"view":"timeSeries","title":"HTTP /capture latency (p50/p95/p99)","region":"",
+              {
+                "Ref": "AWS::Region",
+              },
+              "","metrics":[["BrainTwin/App","latency_ms","method","POST","route","/capture","status","200",{"label":"p50","stat":"p50"}],["BrainTwin/App","latency_ms","method","POST","route","/capture","status","200",{"label":"p95","stat":"p95"}],["BrainTwin/App","latency_ms","method","POST","route","/capture","status","200",{"label":"p99","stat":"p99"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":12,"y":0,"properties":{"view":"timeSeries","title":"HTTP /recall latency (p50/p95/p99)","region":"",
+              {
+                "Ref": "AWS::Region",
+              },
+              "","metrics":[["BrainTwin/App","latency_ms","method","POST","route","/recall","status","200",{"label":"p50","stat":"p50"}],["BrainTwin/App","latency_ms","method","POST","route","/recall","status","200",{"label":"p95","stat":"p95"}],["BrainTwin/App","latency_ms","method","POST","route","/recall","status","200",{"label":"p99","stat":"p99"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":0,"y":6,"properties":{"view":"timeSeries","title":"HTTP request count by route (200)","region":"",
+              {
+                "Ref": "AWS::Region",
+              },
+              "","metrics":[["BrainTwin/App","count","method","POST","route","/capture","status","200",{"label":"/capture","stat":"Sum"}],["BrainTwin/App","count","method","POST","route","/recall","status","200",{"label":"/recall","stat":"Sum"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":12,"y":6,"properties":{"view":"timeSeries","title":"HTTP 5xx by route","region":"",
+              {
+                "Ref": "AWS::Region",
+              },
+              "","metrics":[["BrainTwin/App","count","method","POST","route","/capture","status","500",{"label":"/capture 500","stat":"Sum"}],["BrainTwin/App","count","method","POST","route","/recall","status","503",{"label":"/recall 503","stat":"Sum"}],["BrainTwin/App","count","method","POST","route","/recall","status","500",{"label":"/recall 500","stat":"Sum"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":0,"y":12,"properties":{"view":"timeSeries","title":"Anthropic latency p95 by endpoint","region":"",
+              {
+                "Ref": "AWS::Region",
+              },
+              "","metrics":[["BrainTwin/App","anthropic_latency_ms","endpoint","enrich","error","none","model","claude-haiku-4-5-20251001",{"label":"enrich (Haiku)","stat":"p95"}],["BrainTwin/App","anthropic_latency_ms","endpoint","complete_json","error","none","model","claude-sonnet-4-6",{"label":"complete_json (Sonnet)","stat":"p95"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":12,"y":12,"properties":{"view":"timeSeries","title":"Chroma vector query latency p95","region":"",
+              {
+                "Ref": "AWS::Region",
+              },
+              "","metrics":[["BrainTwin/App","chroma_query_latency_ms","collection","chunks","error","none","top_k","20",{"label":"chunks top_k=20","stat":"p95"}]],"yAxis":{}}}]}",
+            ],
+          ],
+        },
+        "DashboardName": "BrainTwin-App",
+      },
+      "Type": "AWS::CloudWatch::Dashboard",
     },
     "ObservabilityAppLogGroupE3B481A7": {
       "DeletionPolicy": "Retain",

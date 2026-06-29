@@ -48,6 +48,7 @@
  */
 import * as cdk from "aws-cdk-lib";
 import * as budgets from "aws-cdk-lib/aws-budgets";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as dlm from "aws-cdk-lib/aws-dlm";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
@@ -79,6 +80,14 @@ export class ObservabilityConstruct extends Construct {
    * via the DLM lifecycle policy.
    */
   public readonly dlmRole: iam.Role;
+
+  /**
+   * CloudWatch dashboard surfacing app-level metrics in the
+   * `BrainTwin/App` namespace (M.11). The app emits EMF log lines from
+   * inside the request handler / Anthropic call / Chroma query; this
+   * dashboard renders them as graphs.
+   */
+  public readonly appDashboard: cloudwatch.Dashboard;
 
   constructor(scope: Construct, id: string, props: ObservabilityConstructProps) {
     super(scope, id);
@@ -270,6 +279,140 @@ export class ObservabilityConstruct extends Construct {
     });
 
     // -----------------------------------------------------------------
+    // 3.5) CloudWatch Dashboard — app-level metrics (M.11)
+    // -----------------------------------------------------------------
+    //
+    // The FastAPI app emits CloudWatch Embedded Metric Format (EMF)
+    // log lines from inside the request path: one per HTTP request
+    // (latency + count), one per Anthropic call (latency + token
+    // counts), one per Chroma query (latency). CloudWatch ingests
+    // these into the `BrainTwin/App` namespace; this dashboard
+    // surfaces them as graphs.
+    //
+    // Why "rendered, not stored" metrics: EMF lines live in the same
+    // /braintwin/app log group as the app's regular stdout. CloudWatch
+    // extracts the numeric values at ingestion - no separate API call,
+    // no per-metric publish cost. The trade is 1-2 minute ingestion
+    // delay before a metric shows up on the dashboard.
+    //
+    // Dimensions we control (set in backend/observability/emf.py):
+    //   HTTP:      route, method, status
+    //   Anthropic: endpoint (enrich|complete_json), model, error
+    //   Chroma:    collection, top_k, error
+    //
+    // The widgets below pin SPECIFIC dimension values (route=/capture,
+    // route=/recall, endpoint=enrich, etc.) so the graph is human-
+    // readable. Adding a new endpoint = adding a metric here. That's
+    // explicit by design - dashboards should reflect the ops contract,
+    // not enumerate it from the wire.
+    const period = cdk.Duration.minutes(5);
+    const httpDims = (route: string) => ({
+      route,
+      method: "POST",
+      status: "200",
+    });
+    const mk = (
+      label: string,
+      metricName: string,
+      dimensions: Record<string, string>,
+      statistic: string,
+    ) =>
+      new cloudwatch.Metric({
+        namespace: "BrainTwin/App",
+        metricName,
+        dimensionsMap: dimensions,
+        statistic,
+        period,
+        label,
+      });
+
+    this.appDashboard = new cloudwatch.Dashboard(this, "AppDashboard", {
+      dashboardName: brandedName("App"),
+      // 3-hour default view: long enough to see a rolling-deploy
+      // settle in, short enough to spot a current incident.
+      defaultInterval: cdk.Duration.hours(3),
+      widgets: [
+        // Row 1: HTTP per-route latency + count
+        [
+          new cloudwatch.GraphWidget({
+            title: "HTTP /capture latency (p50/p95/p99)",
+            left: [
+              mk("p50", "latency_ms", httpDims("/capture"), "p50"),
+              mk("p95", "latency_ms", httpDims("/capture"), "p95"),
+              mk("p99", "latency_ms", httpDims("/capture"), "p99"),
+            ],
+            width: 12,
+          }),
+          new cloudwatch.GraphWidget({
+            title: "HTTP /recall latency (p50/p95/p99)",
+            left: [
+              mk("p50", "latency_ms", httpDims("/recall"), "p50"),
+              mk("p95", "latency_ms", httpDims("/recall"), "p95"),
+              mk("p99", "latency_ms", httpDims("/recall"), "p99"),
+            ],
+            width: 12,
+          }),
+        ],
+        // Row 2: HTTP request count + 5xx + 4xx (errors)
+        [
+          new cloudwatch.GraphWidget({
+            title: "HTTP request count by route (200)",
+            left: [
+              mk("/capture", "count", httpDims("/capture"), "Sum"),
+              mk("/recall", "count", httpDims("/recall"), "Sum"),
+            ],
+            width: 12,
+          }),
+          new cloudwatch.GraphWidget({
+            title: "HTTP 5xx by route",
+            // 500 is the auto-emitted "handler crashed before sending
+            // status" case from EMFMiddleware; 503 is the "Recaller
+            // not initialised" branch we emit explicitly.
+            left: [
+              mk("/capture 500", "count", { route: "/capture", method: "POST", status: "500" }, "Sum"),
+              mk("/recall 503", "count", { route: "/recall", method: "POST", status: "503" }, "Sum"),
+              mk("/recall 500", "count", { route: "/recall", method: "POST", status: "500" }, "Sum"),
+            ],
+            width: 12,
+          }),
+        ],
+        // Row 3: Anthropic latency by endpoint
+        [
+          new cloudwatch.GraphWidget({
+            title: "Anthropic latency p95 by endpoint",
+            left: [
+              mk(
+                "enrich (Haiku)",
+                "anthropic_latency_ms",
+                { endpoint: "enrich", model: "claude-haiku-4-5-20251001", error: "none" },
+                "p95",
+              ),
+              mk(
+                "complete_json (Sonnet)",
+                "anthropic_latency_ms",
+                { endpoint: "complete_json", model: "claude-sonnet-4-6", error: "none" },
+                "p95",
+              ),
+            ],
+            width: 12,
+          }),
+          new cloudwatch.GraphWidget({
+            title: "Chroma vector query latency p95",
+            left: [
+              mk(
+                "chunks top_k=20",
+                "chroma_query_latency_ms",
+                { collection: "chunks", top_k: "20", error: "none" },
+                "p95",
+              ),
+            ],
+            width: 12,
+          }),
+        ],
+      ],
+    });
+
+    // -----------------------------------------------------------------
     // 4) Outputs — for ops runbooks
     // -----------------------------------------------------------------
     new cdk.CfnOutput(this, "AppLogGroupName", {
@@ -291,6 +434,14 @@ export class ObservabilityConstruct extends Construct {
       description:
         `CloudWatch log group for the Caddy reverse proxy (M.4.b+). ` +
         `Tail via: aws logs tail ${caddyLogGroupName} --follow --profile braintwin`,
+    });
+
+    new cdk.CfnOutput(this, "AppDashboardUrl", {
+      value: `https://${cdk.Stack.of(this).region}.console.aws.amazon.com/cloudwatch/home?region=${cdk.Stack.of(this).region}#dashboards:name=${this.appDashboard.dashboardName}`,
+      description:
+        "CloudWatch dashboard for app-level metrics (M.11). Open this " +
+        "URL to see per-route HTTP latency, Anthropic call timing, and " +
+        "Chroma query latency.",
     });
   }
 
