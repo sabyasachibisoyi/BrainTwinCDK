@@ -244,4 +244,59 @@ describe("ObservabilityConstruct", () => {
       expect(found.length).toBeGreaterThanOrEqual(2);
     });
   });
+
+  describe("M.11 — CloudWatch dashboard for app-level EMF metrics", () => {
+    test("creates exactly one CloudWatch dashboard named BrainTwin-App", () => {
+      const t = Template.fromStack(makeStack());
+      t.resourceCountIs("AWS::CloudWatch::Dashboard", 1);
+      t.hasResourceProperties("AWS::CloudWatch::Dashboard", {
+        DashboardName: brandedName("App"),
+      });
+    });
+
+    test("dashboard body references BrainTwin/App namespace + all 3 metric names", () => {
+      // CDK stringifies the DashboardBody as an Fn::Join of literal
+      // strings + CFN tokens; we stringify the whole resource and grep
+      // for substrings. If a metric name regresses (e.g., the app
+      // renames anthropic_latency_ms but the dashboard doesn't
+      // follow), this catches it at PR time.
+      const t = Template.fromStack(makeStack());
+      const dashboards = t.findResources("AWS::CloudWatch::Dashboard");
+      const blob = JSON.stringify(Object.values(dashboards)[0]);
+      expect(blob).toContain("BrainTwin/App");
+      expect(blob).toContain("latency_ms");
+      expect(blob).toContain("anthropic_latency_ms");
+      expect(blob).toContain("chroma_query_latency_ms");
+    });
+
+    test("dashboard widgets pin specific routes and Anthropic endpoints", () => {
+      // The widgets pin specific dimension values (route=/capture,
+      // route=/recall, endpoint=enrich, etc.). If anyone strips them
+      // out into a single un-dimensioned graph, the per-route signal
+      // gets averaged into uselessness.
+      const t = Template.fromStack(makeStack());
+      const dashboards = t.findResources("AWS::CloudWatch::Dashboard");
+      const blob = JSON.stringify(Object.values(dashboards)[0]);
+      expect(blob).toContain("/capture");
+      expect(blob).toContain("/recall");
+      expect(blob).toContain("enrich");
+      expect(blob).toContain("complete_json");
+    });
+
+    test("dashboard URL is in outputs (operator runbook needs it)", () => {
+      // The Value is a CFN token (it embeds Stack.region as a Ref so
+      // the URL stays correct across regions), so `typeof === "string"`
+      // returns false. Match on the output KEY + the literal
+      // Description instead, both of which stay as strings at synth.
+      const t = Template.fromStack(makeStack());
+      const outputs = t.findOutputs("*");
+      const found = Object.entries(outputs).find(
+        ([key, o]) =>
+          key.toLowerCase().includes("dashboard") &&
+          typeof o.Description === "string" &&
+          (o.Description as string).includes("dashboard for app-level"),
+      );
+      expect(found).toBeDefined();
+    });
+  });
 });

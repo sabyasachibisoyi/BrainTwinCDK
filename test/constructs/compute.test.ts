@@ -274,20 +274,55 @@ describe("ComputeConstruct", () => {
         .join("\n");
     }
 
-    test("fetches each of the five SSM secret parameters with decryption", () => {
+    test("discovers secrets via get-parameters-by-path under /braintwin/ (M.10)", () => {
+      // M.10 replaced 5 hardcoded `get-parameter` calls with a single
+      // `get-parameters-by-path /braintwin/ --recursive --with-decryption`.
+      // The refresh script then loops over discovered params, applies
+      // a small alias table for the 3 env var renames, and writes
+      // secrets.env. If anyone reverts this back to hardcoded
+      // get-parameter calls, adding a new secret regresses to "needs
+      // CDK edit + EBS-deadlock dance" again.
       const t = Template.fromStack(makeStack());
       const s = userDataAsString(t);
-      // The fetch uses `--with-decryption` on each parameter — without
-      // it the SecureString would come back base64'd ciphertext.
+      // Discovery is in place
+      expect(s).toContain("get-parameters-by-path");
+      expect(s).toContain("--path /braintwin/");
+      expect(s).toContain("--recursive");
+      // Still using decryption (SecureStrings)
       expect(s).toContain("--with-decryption");
-      expect(s).toContain("/braintwin/anthropic_key");
-      expect(s).toContain("/braintwin/bearer_token");
-      expect(s).toContain("/braintwin/telegram_token");
-      expect(s).toContain("/braintwin/cloudflare_api_token");
-      // M.7.5: bot allowlist via SSM, rotatable via deploy.sh refresh
-      // (no instance replacement needed).
-      expect(s).toContain("/braintwin/allowed_telegram_user_ids");
-      expect(s).toContain("ALLOWED_TELEGRAM_USER_IDS=");
+      // Parsing goes through `jq -r @tsv`, not the CLI's `--output
+      // text` (newline-separated rows would corrupt a secret value that
+      // itself contains a newline). The json+jq pair is the guard; we
+      // can't assert absence of "--output text" globally because the
+      // image_tag/account-id get-parameter calls legitimately use it.
+      expect(s).toContain("--output json");
+      expect(s).toContain("jq -r '.[] | @tsv'");
+      // The image_tag + caddy_image_tag params must be skipped — they
+      // live under /braintwin/ but are NOT secrets, and would leak
+      // into secrets.env if the filter were dropped.
+      expect(s).toContain("image_tag|caddy_image_tag");
+      // The 3 alias renames must be present (basename uppercased
+      // doesn't match the app-side env var name for these three).
+      expect(s).toContain("ANTHROPIC_KEY)");
+      expect(s).toContain("ANTHROPIC_API_KEY");
+      expect(s).toContain("BEARER_TOKEN)");
+      expect(s).toContain("BACKEND_BEARER_TOKEN");
+      expect(s).toContain("TELEGRAM_TOKEN)");
+      expect(s).toContain("TELEGRAM_BOT_TOKEN");
+    });
+
+    test("refresh script fails loud if a required env var is missing from SSM (M.10 defensive check)", () => {
+      // The defensive grep loop after the discovery: if put-secrets.sh
+      // wasn't run on a fresh account or a rotation typo'd a name,
+      // secrets.env would be missing one of the 5 expected app-side
+      // env vars and downstream containers would crash on missing env
+      // with a much less actionable error. The defensive check fails
+      // boot with a clear "Did you run scripts/put-secrets.sh?" message.
+      const t = Template.fromStack(makeStack());
+      const s = userDataAsString(t);
+      expect(s).toContain("ANTHROPIC_API_KEY BACKEND_BEARER_TOKEN TELEGRAM_BOT_TOKEN CLOUDFLARE_API_TOKEN ALLOWED_TELEGRAM_USER_IDS");
+      expect(s).toContain("FATAL");
+      expect(s).toContain("put-secrets.sh");
     });
 
     test("writes secrets.env with mode 0600 and umask 077", () => {
