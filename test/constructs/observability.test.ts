@@ -397,27 +397,54 @@ describe("ObservabilityConstruct", () => {
       });
     });
 
-    test("alarm uses a MathExpression filtering to error=AuthenticationError", () => {
-      // The alarm metric must be a MathExpression (not a plain Metric)
-      // — plain Metric can't aggregate across the (endpoint, model)
-      // dimension tuples without hardcoding each model name, which
-      // would drift every time we bump Sonnet/Haiku. The SEARCH
-      // expression + phrase filter is the model-agnostic form.
+    test("alarm uses metric-math over enumerated (endpoint, model) metrics filtered to error=AuthenticationError", () => {
+      // The alarm metric must be a MathExpression backed by explicit
+      // Metric queries. Two constraints drive this:
+      //   1. CloudFormation rejects SEARCH() inside alarms
+      //      ("SEARCH is not supported on Metric Alarms") — SEARCH
+      //      returns a variable set of metrics, alarms need
+      //      deterministic bindings.
+      //   2. FILL(m, 0) turns missing samples into 0 so the sum
+      //      evaluates when only ONE of the two Anthropic call paths
+      //      hits an auth error in a given window.
+      // If someone reintroduces SEARCH — this test fails at PR time,
+      // before CloudFormation rejects it at deploy time.
       const t = Template.fromStack(makeStack());
       const alarms = t.findResources("AWS::CloudWatch::Alarm");
       const alarm = Object.values(alarms)[0];
       const metrics = alarm.Properties.Metrics ?? [];
-      // At least one MetricDataQuery entry should carry the SEARCH
-      // expression pinning "AuthenticationError".
+      // Split into expression queries and raw MetricStat queries.
       const exprs = metrics
         .map((m: { Expression?: string }) => m.Expression)
         .filter((e: string | undefined): e is string => typeof e === "string");
       expect(exprs.length).toBeGreaterThan(0);
-      const combined = exprs.join(" ");
-      expect(combined).toContain("SEARCH");
-      expect(combined).toContain("anthropic_latency_ms");
-      expect(combined).toContain("AuthenticationError");
-      expect(combined).toContain("SampleCount");
+      const exprBlob = exprs.join(" ");
+      // The math expression uses FILL, not SEARCH.
+      expect(exprBlob).toContain("FILL");
+      expect(exprBlob).not.toContain("SEARCH");
+      // The underlying metric queries must reference anthropic_latency_ms
+      // with SampleCount statistic AND the AuthenticationError dimension.
+      const metricStats = metrics
+        .map(
+          (m: {
+            MetricStat?: {
+              Metric?: {
+                MetricName?: string;
+                Dimensions?: { Name: string; Value: string }[];
+              };
+              Stat?: string;
+            };
+          }) => m.MetricStat,
+        )
+        .filter((s: unknown): s is NonNullable<typeof s> => Boolean(s));
+      // Two (endpoint, model) tuples → two MetricStat queries.
+      expect(metricStats.length).toBe(2);
+      for (const s of metricStats) {
+        expect(s.Metric?.MetricName).toBe("anthropic_latency_ms");
+        expect(s.Stat).toBe("SampleCount");
+        const dimBlob = JSON.stringify(s.Metric?.Dimensions ?? []);
+        expect(dimBlob).toContain("AuthenticationError");
+      }
     });
 
     test("alarm threshold = 1 (single AuthenticationError triggers)", () => {

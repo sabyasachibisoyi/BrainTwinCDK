@@ -656,15 +656,53 @@ export class ObservabilityConstruct extends Construct {
       );
     }
 
-    // SEARCH + SUM: aggregates SampleCount of `anthropic_latency_ms`
-    // across (endpoint, model) for the `AuthenticationError` value of
-    // the `error` dimension. Model-version-agnostic — a Sonnet or
-    // Haiku bump doesn't require an alarm update. Period matches the
-    // dashboard widgets (5 min) for visual alignment.
+    // Metric-math alarm: SEARCH() is NOT permitted in metric alarms
+    // (CloudFormation returns "SEARCH is not supported on Metric
+    // Alarms" — SEARCH returns a variable set of metrics and alarms
+    // require deterministic bindings). SEARCH is fine on dashboards
+    // (used in row 3.5 above); alarms have to enumerate the metrics.
+    //
+    // Enumerate the two known (endpoint, model) tuples for
+    // `error=AuthenticationError`. Both model strings match
+    // `settings.enrichment_model` / `settings.agent_model` in
+    // `BrainTwin/backend/config.py` and are the same strings already
+    // pinned in the Row-3 success-latency widget above, so any model
+    // bump requires updating both spots together (a docstring in
+    // config.py flags this coupling explicitly).
+    //
+    // FILL(m, 0) turns missing samples into 0s so the sum still
+    // evaluates when only ONE of the two paths has an error in a
+    // given window. The final expression is a single deterministic
+    // time series — alarm-safe.
+    const authErrorHaikuEnrich = new cloudwatch.Metric({
+      namespace: "BrainTwin/App",
+      metricName: "anthropic_latency_ms",
+      dimensionsMap: {
+        endpoint: "enrich",
+        model: "claude-haiku-4-5-20251001",
+        error: "AuthenticationError",
+      },
+      statistic: "SampleCount",
+      period,
+    });
+    const authErrorSonnetCompleteJson = new cloudwatch.Metric({
+      namespace: "BrainTwin/App",
+      metricName: "anthropic_latency_ms",
+      dimensionsMap: {
+        endpoint: "complete_json",
+        model: "claude-sonnet-4-6",
+        error: "AuthenticationError",
+      },
+      statistic: "SampleCount",
+      period,
+    });
     const anthropicAuthErrorMetric = new cloudwatch.MathExpression({
-      expression: `SUM(SEARCH('{BrainTwin/App,endpoint,model,error} MetricName="anthropic_latency_ms" "AuthenticationError"', 'SampleCount', ${period.toSeconds()}))`,
-      label: "Anthropic AuthenticationError count (all endpoints)",
-      usingMetrics: {},
+      expression: "FILL(m1, 0) + FILL(m2, 0)",
+      usingMetrics: {
+        m1: authErrorHaikuEnrich,
+        m2: authErrorSonnetCompleteJson,
+      },
+      label: "Anthropic AuthenticationError count (enrich + complete_json)",
       period,
     });
 
