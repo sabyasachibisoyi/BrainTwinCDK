@@ -1,8 +1,10 @@
 {
-  "agent": { "metrics_collection_interval": 60 },
+  "agent": {
+    "metrics_collection_interval": 60,
+    "omit_hostname": true
+  },
   "metrics": {
     "namespace": "BrainTwin/System",
-    "append_dimensions": { "InstanceId": "${aws:InstanceId}" },
     "metrics_collected": {
       "cpu": {
         "measurement": ["cpu_usage_idle", "cpu_usage_iowait", "cpu_usage_user", "cpu_usage_system"],

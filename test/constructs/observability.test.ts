@@ -283,6 +283,51 @@ describe("ObservabilityConstruct", () => {
       expect(blob).toContain("complete_json");
     });
 
+    test("dashboard also surfaces BrainTwin/System metrics via SEARCH (no pinned InstanceId)", () => {
+      // System metrics (CPU/mem/disk/diskio from M.5 CW Agent) live in
+      // a separate namespace and carry a dynamic InstanceId dimension.
+      // Pinning a specific InstanceId would break the chart on every
+      // §14.1 instance replacement. The dashboard uses SEARCH math
+      // expressions instead — bound by metric name + dimension schema,
+      // not by a particular id. If anyone replaces SEARCH with a
+      // hardcoded metric query, the chart goes blank the next time
+      // CFN replaces the instance.
+      const t = Template.fromStack(makeStack());
+      const dashboards = t.findResources("AWS::CloudWatch::Dashboard");
+      const blob = JSON.stringify(Object.values(dashboards)[0]);
+      expect(blob).toContain("BrainTwin/System");
+      // Specific metric names from M.5's CW Agent config — these
+      // identify what's actually being charted.
+      expect(blob).toContain("cpu_usage_idle");
+      expect(blob).toContain("mem_used_percent");
+      expect(blob).toContain("used_percent");   // disk
+      expect(blob).toContain("write_bytes");    // diskio
+      // SEARCH math expression in use (across-InstanceId resilience)
+      expect(blob).toContain("SEARCH(");
+    });
+
+    test("dashboard SEARCH schemas do NOT include InstanceId or host (instance-lifetime cardinality guard)", () => {
+      // Pairs with the assets/amazon-cloudwatch-agent.json config that
+      // drops `append_dimensions` (InstanceId) and sets `omit_hostname:
+      // true`. Both decisions exist to keep custom-metric cardinality
+      // bounded across instance replacements (§14.1 EBS-deadlock dance
+      // mints a new InstanceId/hostname each time, and CW retains them
+      // for 15 months → ghost lines + drifting cost).
+      //
+      // The dashboard side of the contract: SEARCH schemas must NOT
+      // reference these dimensions. If anyone adds them back (e.g., to
+      // distinguish multi-AZ instances) they have to update BOTH the
+      // agent config AND every SEARCH expression — and ideally pick a
+      // STABLE label (az, node-role) over the ephemeral InstanceId.
+      const t = Template.fromStack(makeStack());
+      const dashboards = t.findResources("AWS::CloudWatch::Dashboard");
+      const blob = JSON.stringify(Object.values(dashboards)[0]);
+      // The SEARCH schema appears as `{BrainTwin/System,...} MetricName`
+      // — check no schema includes InstanceId or host.
+      expect(blob).not.toMatch(/BrainTwin\/System[^}]*InstanceId/);
+      expect(blob).not.toMatch(/BrainTwin\/System[^}]*\bhost\b/);
+    });
+
     test("dashboard URL is in outputs (operator runbook needs it)", () => {
       // The Value is a CFN token (it embeds Stack.region as a Ref so
       // the URL stays correct across regions), so `typeof === "string"`

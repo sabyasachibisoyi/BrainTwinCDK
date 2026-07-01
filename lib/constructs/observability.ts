@@ -279,15 +279,28 @@ export class ObservabilityConstruct extends Construct {
     });
 
     // -----------------------------------------------------------------
-    // 3.5) CloudWatch Dashboard — app-level metrics (M.11)
+    // 3.5) CloudWatch Dashboard — app-level + system metrics (M.11 + M.5)
     // -----------------------------------------------------------------
     //
-    // The FastAPI app emits CloudWatch Embedded Metric Format (EMF)
-    // log lines from inside the request path: one per HTTP request
-    // (latency + count), one per Anthropic call (latency + token
-    // counts), one per Chroma query (latency). CloudWatch ingests
-    // these into the `BrainTwin/App` namespace; this dashboard
-    // surfaces them as graphs.
+    // Single dashboard surfacing two metric namespaces side-by-side:
+    //
+    //   - BrainTwin/App   (M.11) — emitted from inside the FastAPI app
+    //                              via EMF log lines (one per HTTP
+    //                              request, per Anthropic call, per
+    //                              Chroma query). CloudWatch ingests
+    //                              these from /braintwin/app at log
+    //                              ingestion time — no separate API
+    //                              call, no per-metric publish cost.
+    //   - BrainTwin/System (M.5) — emitted by the CloudWatch Agent
+    //                              running on the EC2 (CPU, memory,
+    //                              disk, disk I/O). Real CloudWatch
+    //                              custom metric API calls, billed
+    //                              past the 10-free tier.
+    //
+    // Why one dashboard for both: a recall p95 spike is more
+    // diagnosable next to CPU usage on the same time axis. Splitting
+    // them into separate dashboards forces you to flip between tabs
+    // exactly when you don't want to.
     //
     // Why "rendered, not stored" metrics: EMF lines live in the same
     // /braintwin/app log group as the app's regular stdout. CloudWatch
@@ -325,6 +338,38 @@ export class ObservabilityConstruct extends Construct {
         period,
         label,
       });
+
+    // ---- System-metrics helper (M.5 CloudWatch Agent → BrainTwin/System) ----
+    //
+    // The CW Agent emits OS-level metrics. Importantly, our agent config
+    // (assets/amazon-cloudwatch-agent.json) intentionally drops BOTH
+    // instance-lifetime dimensions (`InstanceId` via removing the
+    // `append_dimensions` block, AND `host` via `omit_hostname: true`).
+    // See the comment block in compute.ts where the asset is declared
+    // for the full rationale: every §14.1 instance replacement would
+    // otherwise mint metric tuples that persist for 15 months,
+    // accumulating cost + chart clutter without value.
+    //
+    // The SEARCH schema below therefore matches on metric name + ONLY
+    // the dimensions CW Agent adds per section that are tied to PHYSICAL
+    // resources (`cpu` for CPU, `path`/`device`/`fstype` for disk,
+    // `name` for diskio). One line per real physical dimension, never
+    // per instance lifetime.
+    //
+    // SEARCH expression syntax: SEARCH('{Namespace,DimName1,DimName2,...} MetricName="X"', 'Stat', PeriodSeconds)
+    const sysSearch = (
+      label: string,
+      metricName: string,
+      extraSchemaDims: string[] = [],
+      statistic: string = "Average",
+    ) => {
+      const schema = ["BrainTwin/System", ...extraSchemaDims].join(",");
+      return new cloudwatch.MathExpression({
+        expression: `SEARCH('{${schema}} MetricName="${metricName}"', '${statistic}', ${period.toSeconds()})`,
+        label,
+        usingMetrics: {},
+      });
+    };
 
     this.appDashboard = new cloudwatch.Dashboard(this, "AppDashboard", {
       dashboardName: brandedName("App"),
@@ -405,6 +450,74 @@ export class ObservabilityConstruct extends Construct {
                 { collection: "chunks", top_k: "20", error: "none" },
                 "p95",
               ),
+            ],
+            width: 12,
+          }),
+        ],
+        // -----------------------------------------------------------------
+        // Rows 4-5: System metrics from the M.5 CloudWatch Agent
+        // (BrainTwin/System namespace). InstanceId floats — SEARCH binds
+        // by metric name + dimension schema, not a specific id, so the
+        // widgets keep working across instance replacements.
+        // -----------------------------------------------------------------
+        // Row 4: CPU + Memory
+        [
+          new cloudwatch.GraphWidget({
+            title: "CPU usage % (per cpu — averages across all cores)",
+            left: [
+              // cpu_usage_* metrics carry an extra `cpu` dimension
+              // (one line per logical CPU + a `cpu-total` aggregate).
+              // Showing user + iowait gives "where is CPU going"
+              // without flooding the chart with all 8 sub-metrics.
+              sysSearch("user", "cpu_usage_user", ["cpu"], "Average"),
+              sysSearch("iowait", "cpu_usage_iowait", ["cpu"], "Average"),
+              sysSearch("system", "cpu_usage_system", ["cpu"], "Average"),
+              // idle is the complement of "busy"; showing it makes
+              // the headroom obvious at a glance.
+              sysSearch("idle", "cpu_usage_idle", ["cpu"], "Average"),
+            ],
+            width: 12,
+          }),
+          new cloudwatch.GraphWidget({
+            title: "Memory % (used + available)",
+            left: [
+              sysSearch("mem_used_percent", "mem_used_percent", [], "Average"),
+              sysSearch(
+                "mem_available_percent",
+                "mem_available_percent",
+                [],
+                "Average",
+              ),
+            ],
+            width: 12,
+          }),
+        ],
+        // Row 5: Disk + Disk I/O
+        [
+          new cloudwatch.GraphWidget({
+            title: "Disk used % (per partition)",
+            left: [
+              // Disk metrics get the additional `device`, `fstype`, and
+              // `path` dimensions. SEARCH returns one line per mounted
+              // partition automatically — we don't need to enumerate
+              // (`/`, `/var/lib/braintwin/data`, etc.).
+              sysSearch(
+                "used %",
+                "used_percent",
+                ["device", "fstype", "path"],
+                "Average",
+              ),
+            ],
+            width: 12,
+          }),
+          new cloudwatch.GraphWidget({
+            title: "Disk I/O bytes/sec (per device)",
+            left: [
+              // diskio metrics use a `name` dimension (e.g.,
+              // `nvme0n1`, `nvme1n1`). Sum statistic so the chart
+              // reads as throughput, not as a per-sample point value.
+              sysSearch("write_bytes", "write_bytes", ["name"], "Sum"),
+              sysSearch("read_bytes", "read_bytes", ["name"], "Sum"),
             ],
             width: 12,
           }),

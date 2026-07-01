@@ -12,7 +12,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
     "ComputePrimaryInstanceId5A264371": {
       "Description": "Primary EC2 instance ID. Use with \`aws ssm start-session --target <id>\` to get a shell on the box (no SSH).",
       "Value": {
-        "Ref": "ComputeInstance03D945A8C58fd52f875f47aa3",
+        "Ref": "ComputeInstance03D945A8C17434bc40529d28c",
       },
     },
     "ConfiguredCaddyImageTag": {
@@ -202,7 +202,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
       "Properties": {
         "Device": "/dev/sdf",
         "InstanceId": {
-          "Ref": "ComputeInstance03D945A8C58fd52f875f47aa3",
+          "Ref": "ComputeInstance03D945A8C17434bc40529d28c",
         },
         "VolumeId": {
           "Ref": "ComputeEbsVolume07C044D41",
@@ -253,7 +253,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
           ],
         },
         "InstanceId": {
-          "Ref": "ComputeInstance03D945A8C58fd52f875f47aa3",
+          "Ref": "ComputeInstance03D945A8C17434bc40529d28c",
         },
       },
       "Type": "AWS::EC2::EIPAssociation",
@@ -273,7 +273,7 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
       },
       "Type": "AWS::SSM::Parameter",
     },
-    "ComputeInstance03D945A8C58fd52f875f47aa3": {
+    "ComputeInstance03D945A8C17434bc40529d28c": {
       "DependsOn": [
         "ComputeCaddyImageTagParam02F625DC",
         "ComputeImageTagParam76ECD74D",
@@ -406,7 +406,7 @@ chmod 644 /etc/caddy/cloudflare-origin-ca.pem
 wget -q https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/arm64/latest/amazon-cloudwatch-agent.deb -O /tmp/cwagent.deb
 dpkg -i /tmp/cwagent.deb
 rm -f /tmp/cwagent.deb
-s3cp_retry s3://cdk-hnb659fds-assets-123456789012-us-west-2/a6fccb3664b6f3e83f07dd13cd5cd83285ef23e9ac33ef2f84e7387c2bb9f787.json /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+s3cp_retry s3://cdk-hnb659fds-assets-123456789012-us-west-2/c375e3cbc58be1d18dbbf3ccff3f6ed09334a903ee52eefa9c837c6ded8c74c5.json /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
 /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s
 s3cp_retry s3://cdk-hnb659fds-assets-123456789012-us-west-2/25f2474583c2a7439faaf64062685ab684286ecb4afcb34f23fc9a52fb3f0eea.sh /usr/local/bin/braintwin-chroma-backup.sh
 chmod 0755 /usr/local/bin/braintwin-chroma-backup.sh
@@ -1641,7 +1641,23 @@ CADDYFILE_EOF
               {
                 "Ref": "AWS::Region",
               },
-              "","metrics":[["BrainTwin/App","chroma_query_latency_ms","collection","chunks","error","none","top_k","20",{"label":"chunks top_k=20","stat":"p95"}]],"yAxis":{}}}]}",
+              "","metrics":[["BrainTwin/App","chroma_query_latency_ms","collection","chunks","error","none","top_k","20",{"label":"chunks top_k=20","stat":"p95"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":0,"y":18,"properties":{"view":"timeSeries","title":"CPU usage % (per cpu — averages across all cores)","region":"",
+              {
+                "Ref": "AWS::Region",
+              },
+              "","metrics":[[{"label":"user","expression":"SEARCH('{BrainTwin/System,cpu} MetricName=\\"cpu_usage_user\\"', 'Average', 300)"}],[{"label":"iowait","expression":"SEARCH('{BrainTwin/System,cpu} MetricName=\\"cpu_usage_iowait\\"', 'Average', 300)"}],[{"label":"system","expression":"SEARCH('{BrainTwin/System,cpu} MetricName=\\"cpu_usage_system\\"', 'Average', 300)"}],[{"label":"idle","expression":"SEARCH('{BrainTwin/System,cpu} MetricName=\\"cpu_usage_idle\\"', 'Average', 300)"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":12,"y":18,"properties":{"view":"timeSeries","title":"Memory % (used + available)","region":"",
+              {
+                "Ref": "AWS::Region",
+              },
+              "","metrics":[[{"label":"mem_used_percent","expression":"SEARCH('{BrainTwin/System} MetricName=\\"mem_used_percent\\"', 'Average', 300)"}],[{"label":"mem_available_percent","expression":"SEARCH('{BrainTwin/System} MetricName=\\"mem_available_percent\\"', 'Average', 300)"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":0,"y":24,"properties":{"view":"timeSeries","title":"Disk used % (per partition)","region":"",
+              {
+                "Ref": "AWS::Region",
+              },
+              "","metrics":[[{"label":"used %","expression":"SEARCH('{BrainTwin/System,device,fstype,path} MetricName=\\"used_percent\\"', 'Average', 300)"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":12,"y":24,"properties":{"view":"timeSeries","title":"Disk I/O bytes/sec (per device)","region":"",
+              {
+                "Ref": "AWS::Region",
+              },
+              "","metrics":[[{"label":"write_bytes","expression":"SEARCH('{BrainTwin/System,name} MetricName=\\"write_bytes\\"', 'Sum', 300)"}],[{"label":"read_bytes","expression":"SEARCH('{BrainTwin/System,name} MetricName=\\"read_bytes\\"', 'Sum', 300)"}]],"yAxis":{}}}]}",
             ],
           ],
         },
