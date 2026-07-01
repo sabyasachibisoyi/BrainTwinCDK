@@ -49,9 +49,12 @@
 import * as cdk from "aws-cdk-lib";
 import * as budgets from "aws-cdk-lib/aws-budgets";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cloudwatch_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as dlm from "aws-cdk-lib/aws-dlm";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as sns_subscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import { Construct } from "constructs";
 import { brandedName, brandedPath, RegionConfig } from "../stack-config";
 
@@ -88,6 +91,28 @@ export class ObservabilityConstruct extends Construct {
    * dashboard renders them as graphs.
    */
   public readonly appDashboard: cloudwatch.Dashboard;
+
+  /**
+   * SNS topic for operational alerts (Anthropic AuthenticationError,
+   * future app-level alarms). Email subscription is created at synth
+   * time from `config.budgetAlertEmail`; if that's unset the topic
+   * exists with no subscribers so the alarm state is still visible in
+   * the CloudWatch console but nothing routes anywhere. Independent of
+   * AWS Budgets — Budgets have their own email-per-notification
+   * mechanism and don't publish to SNS in the same way.
+   */
+  public readonly alertsTopic: sns.Topic;
+
+  /**
+   * CloudWatch alarm on Anthropic AuthenticationError. Fires when
+   * `anthropic_latency_ms` records >= 1 sample with
+   * `error=AuthenticationError` in a 5-minute window. Credit
+   * exhaustion + bad-key both surface as this error class from the
+   * Anthropic Python SDK (401 on `messages.create`). Because credits
+   * are manually recharged, this is the alarm that tells the operator
+   * to top up before the app silently stops enriching / recalling.
+   */
+  public readonly anthropicAuthErrorAlarm: cloudwatch.Alarm;
 
   constructor(scope: Construct, id: string, props: ObservabilityConstructProps) {
     super(scope, id);
@@ -455,6 +480,68 @@ export class ObservabilityConstruct extends Construct {
           }),
         ],
         // -----------------------------------------------------------------
+        // Row 3.5: Anthropic errors by class (per 5 min)
+        // -----------------------------------------------------------------
+        //
+        // The `Row 3` Anthropic-latency widget pins `error=none` so it
+        // only shows successful calls. Failures live in the SAME metric
+        // (`anthropic_latency_ms`) under different values of the `error`
+        // dimension — auto-attached by `timed()` in
+        // backend/observability/emf.py as `type(exc).__name__`. Without a
+        // widget for them, failed calls are invisible on the dashboard
+        // (still queryable via CloudWatch Metrics Explorer, but the
+        // operator has to know to go look).
+        //
+        // One line per Anthropic SDK exception class. Aggregated across
+        // (endpoint, model) via SUM(SEARCH()) so a per-model rename (e.g.,
+        // Sonnet 4.6 → 4.7) doesn't drop lines — the schema stays stable.
+        //
+        // The `AuthenticationError` line is the one wired to the
+        // AnthropicAuthErrorAlarm below (credit exhaustion + bad key).
+        // The other error classes are here for diagnostic completeness:
+        // when the alarm fires you can see at a glance whether the burst
+        // is really auth (recharge Anthropic) or something else.
+        //
+        // NB: SEARCH's phrase-token filter (bare `"AuthenticationError"`)
+        // matches any metric tag that contains that string. Since the
+        // `error` dimension is the only tag with class-name-shaped values,
+        // this is unambiguous. If we ever add a dimension whose value
+        // could collide (e.g., a route named `/AuthenticationError`), the
+        // filter needs to become explicit `error="AuthenticationError"`.
+        [
+          new cloudwatch.GraphWidget({
+            title: "Anthropic errors by class (SampleCount per 5min)",
+            left: [
+              new cloudwatch.MathExpression({
+                expression: `SUM(SEARCH('{BrainTwin/App,endpoint,model,error} MetricName="anthropic_latency_ms" "AuthenticationError"', 'SampleCount', ${period.toSeconds()}))`,
+                label: "AuthenticationError (credits exhausted / bad key)",
+                usingMetrics: {},
+              }),
+              new cloudwatch.MathExpression({
+                expression: `SUM(SEARCH('{BrainTwin/App,endpoint,model,error} MetricName="anthropic_latency_ms" "RateLimitError"', 'SampleCount', ${period.toSeconds()}))`,
+                label: "RateLimitError (429)",
+                usingMetrics: {},
+              }),
+              new cloudwatch.MathExpression({
+                expression: `SUM(SEARCH('{BrainTwin/App,endpoint,model,error} MetricName="anthropic_latency_ms" "APIConnectionError"', 'SampleCount', ${period.toSeconds()}))`,
+                label: "APIConnectionError (network / DNS)",
+                usingMetrics: {},
+              }),
+              new cloudwatch.MathExpression({
+                expression: `SUM(SEARCH('{BrainTwin/App,endpoint,model,error} MetricName="anthropic_latency_ms" "APIStatusError"', 'SampleCount', ${period.toSeconds()}))`,
+                label: "APIStatusError (5xx / non-standard 4xx)",
+                usingMetrics: {},
+              }),
+              new cloudwatch.MathExpression({
+                expression: `SUM(SEARCH('{BrainTwin/App,endpoint,model,error} MetricName="anthropic_latency_ms" "BadRequestError"', 'SampleCount', ${period.toSeconds()}))`,
+                label: "BadRequestError (400 — payload / quota)",
+                usingMetrics: {},
+              }),
+            ],
+            width: 24,
+          }),
+        ],
+        // -----------------------------------------------------------------
         // Rows 4-5: System metrics from the M.5 CloudWatch Agent
         // (BrainTwin/System namespace). InstanceId floats — SEARCH binds
         // by metric name + dimension schema, not a specific id, so the
@@ -526,6 +613,130 @@ export class ObservabilityConstruct extends Construct {
     });
 
     // -----------------------------------------------------------------
+    // 3.6) SNS alerts topic + Anthropic AuthenticationError alarm
+    // -----------------------------------------------------------------
+    //
+    // Motivation: Anthropic credits are recharged manually (no auto-
+    // renewal, by design — it caps the blast radius of a runaway
+    // burn). When credits run out mid-day the API starts returning 401
+    // AuthenticationError, LLMClient re-raises as PermanentLLMError,
+    // and both /capture (enrichment) and /recall (Sonnet reasoning)
+    // start failing silently unless someone is watching the dashboard.
+    // AWS Budgets don't help here — they only see AWS-billed spend,
+    // not Anthropic's separate account. This alarm is the app-level
+    // "credits gone" signal.
+    //
+    // Why AuthenticationError specifically (not the whole Permanent
+    // class): auth errors are deterministic, need human action, and
+    // have a very low false-positive rate. RateLimitError /
+    // APIConnectionError self-recover; alarming on them would produce
+    // noise. If credit exhaustion ever surfaces as BadRequestError on
+    // Anthropic's side (SDK version drift), the dashboard error widget
+    // above shows the actual class name in real time — swap it in
+    // here.
+    //
+    // Cost:
+    //   - 1 CloudWatch alarm (past the 10-free tier): $0.10 / month
+    //   - 1 SNS topic + email subscription: free at this volume
+    //   - MathExpression evaluation: bundled in alarm price
+    // Total incremental cost: ~$0.10 / month.
+    this.alertsTopic = new sns.Topic(this, "AlertsTopic", {
+      topicName: brandedName("Alerts"),
+      displayName: "BrainTwin Operational Alerts",
+    });
+
+    // Same email as AWS Budgets — one inbox for all operational
+    // alerts. If BRAINTWIN_ALERT_EMAIL is unset the topic exists with
+    // no subscribers so the alarm state is still visible in the
+    // CloudWatch console but nothing routes anywhere; the synth
+    // warning above (budgets section) already prompted the operator.
+    if (configuredEmail) {
+      this.alertsTopic.addSubscription(
+        new sns_subscriptions.EmailSubscription(configuredEmail),
+      );
+    }
+
+    // Metric-math alarm: SEARCH() is NOT permitted in metric alarms
+    // (CloudFormation returns "SEARCH is not supported on Metric
+    // Alarms" — SEARCH returns a variable set of metrics and alarms
+    // require deterministic bindings). SEARCH is fine on dashboards
+    // (used in row 3.5 above); alarms have to enumerate the metrics.
+    //
+    // Enumerate the two known (endpoint, model) tuples for
+    // `error=AuthenticationError`. Both model strings match
+    // `settings.enrichment_model` / `settings.agent_model` in
+    // `BrainTwin/backend/config.py` and are the same strings already
+    // pinned in the Row-3 success-latency widget above, so any model
+    // bump requires updating both spots together (a docstring in
+    // config.py flags this coupling explicitly).
+    //
+    // FILL(m, 0) turns missing samples into 0s so the sum still
+    // evaluates when only ONE of the two paths has an error in a
+    // given window. The final expression is a single deterministic
+    // time series — alarm-safe.
+    const authErrorHaikuEnrich = new cloudwatch.Metric({
+      namespace: "BrainTwin/App",
+      metricName: "anthropic_latency_ms",
+      dimensionsMap: {
+        endpoint: "enrich",
+        model: "claude-haiku-4-5-20251001",
+        error: "AuthenticationError",
+      },
+      statistic: "SampleCount",
+      period,
+    });
+    const authErrorSonnetCompleteJson = new cloudwatch.Metric({
+      namespace: "BrainTwin/App",
+      metricName: "anthropic_latency_ms",
+      dimensionsMap: {
+        endpoint: "complete_json",
+        model: "claude-sonnet-4-6",
+        error: "AuthenticationError",
+      },
+      statistic: "SampleCount",
+      period,
+    });
+    const anthropicAuthErrorMetric = new cloudwatch.MathExpression({
+      expression: "FILL(m1, 0) + FILL(m2, 0)",
+      usingMetrics: {
+        m1: authErrorHaikuEnrich,
+        m2: authErrorSonnetCompleteJson,
+      },
+      label: "Anthropic AuthenticationError count (enrich + complete_json)",
+      period,
+    });
+
+    this.anthropicAuthErrorAlarm = new cloudwatch.Alarm(
+      this,
+      "AnthropicAuthErrorAlarm",
+      {
+        alarmName: brandedName("Anthropic-AuthError"),
+        alarmDescription:
+          "Anthropic API returned AuthenticationError - most likely " +
+          "cause is exhausted prepaid credit on the Anthropic account " +
+          "(recharge at https://console.anthropic.com/settings/billing). " +
+          "Second most likely cause is a rotated / revoked API key. " +
+          "Until this clears, /capture enrichment and /recall Sonnet " +
+          "reasoning both fail with PermanentLLMError.",
+        metric: anthropicAuthErrorMetric,
+        threshold: 1,
+        evaluationPeriods: 1,
+        datapointsToAlarm: 1,
+        comparisonOperator:
+          cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        // Missing data = no auth errors emitted in this window = OK.
+        // A metric-that-never-existed initially shows Insufficient Data;
+        // once the first data point lands, CloudWatch evaluates
+        // normally. Under NOT_BREACHING, sustained missing data stays
+        // OK — appropriate for a low-frequency error metric.
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      },
+    );
+    this.anthropicAuthErrorAlarm.addAlarmAction(
+      new cloudwatch_actions.SnsAction(this.alertsTopic),
+    );
+
+    // -----------------------------------------------------------------
     // 4) Outputs — for ops runbooks
     // -----------------------------------------------------------------
     new cdk.CfnOutput(this, "AppLogGroupName", {
@@ -555,6 +766,25 @@ export class ObservabilityConstruct extends Construct {
         "CloudWatch dashboard for app-level metrics (M.11). Open this " +
         "URL to see per-route HTTP latency, Anthropic call timing, and " +
         "Chroma query latency.",
+    });
+
+    new cdk.CfnOutput(this, "AlertsTopicArn", {
+      value: this.alertsTopic.topicArn,
+      description:
+        "SNS topic for operational alerts (Anthropic AuthenticationError " +
+        "etc.). Email subscription is created only if BRAINTWIN_ALERT_EMAIL " +
+        "was set at synth time. To add more subscribers post-deploy: " +
+        "aws sns subscribe --topic-arn <arn> --protocol email --notification-endpoint <addr> --profile braintwin",
+    });
+
+    new cdk.CfnOutput(this, "AnthropicAuthErrorAlarmName", {
+      value: this.anthropicAuthErrorAlarm.alarmName,
+      description:
+        "CloudWatch alarm on Anthropic 401 (credit exhaustion / bad " +
+        "key). Fires when >= 1 AuthenticationError sample appears in a " +
+        "5-minute window. When it fires, recharge Anthropic credit at " +
+        "https://console.anthropic.com/settings/billing (or rotate the " +
+        "key in SSM at /braintwin/anthropic_api_key if you rotated it).",
     });
   }
 
