@@ -343,5 +343,143 @@ describe("ObservabilityConstruct", () => {
       );
       expect(found).toBeDefined();
     });
+
+    test("dashboard surfaces Anthropic error counts by class (auth + rate + connection + status + bad-request)", () => {
+      // The success-latency widget pins `error=none`, hiding failures.
+      // The error-widget row (3.5) shows one line per Anthropic SDK
+      // exception class. If someone strips this widget or renames the
+      // classes, the operator loses visibility into WHY calls are
+      // failing — the AuthenticationError alarm still fires but the
+      // dashboard no longer distinguishes credit-out from network
+      // blips from rate limits, forcing a console dive at incident
+      // time. This test locks the five error classes we know about.
+      const t = Template.fromStack(makeStack());
+      const dashboards = t.findResources("AWS::CloudWatch::Dashboard");
+      const blob = JSON.stringify(Object.values(dashboards)[0]);
+      expect(blob).toContain("AuthenticationError");
+      expect(blob).toContain("RateLimitError");
+      expect(blob).toContain("APIConnectionError");
+      expect(blob).toContain("APIStatusError");
+      expect(blob).toContain("BadRequestError");
+    });
+  });
+
+  describe("Anthropic AuthenticationError alarm (credit-exhaustion signal)", () => {
+    test("exactly one SNS topic is created for operational alerts", () => {
+      const t = Template.fromStack(makeStack());
+      t.resourceCountIs("AWS::SNS::Topic", 1);
+      t.hasResourceProperties("AWS::SNS::Topic", {
+        TopicName: brandedName("Alerts"),
+      });
+    });
+
+    test("no email subscription is created when BRAINTWIN_ALERT_EMAIL is unset (test env)", () => {
+      // jest.setup.ts pins BRAINTWIN_ALERT_EMAIL="" so we never spam a
+      // real address at test time. Under that config the SNS topic
+      // MUST exist without any subscribers — the topic is still useful
+      // (alarm state visible in console, subscribable post-deploy via
+      // CLI), but no @example.invalid ghost subscription should leak
+      // in. If someone forgets the guard and always subscribes, this
+      // test catches it.
+      const t = Template.fromStack(makeStack());
+      t.resourceCountIs("AWS::SNS::Subscription", 0);
+    });
+
+    test("exactly one CloudWatch alarm is created", () => {
+      const t = Template.fromStack(makeStack());
+      t.resourceCountIs("AWS::CloudWatch::Alarm", 1);
+    });
+
+    test("alarm name is BrainTwin-Anthropic-AuthError", () => {
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        AlarmName: brandedName("Anthropic-AuthError"),
+      });
+    });
+
+    test("alarm uses a MathExpression filtering to error=AuthenticationError", () => {
+      // The alarm metric must be a MathExpression (not a plain Metric)
+      // — plain Metric can't aggregate across the (endpoint, model)
+      // dimension tuples without hardcoding each model name, which
+      // would drift every time we bump Sonnet/Haiku. The SEARCH
+      // expression + phrase filter is the model-agnostic form.
+      const t = Template.fromStack(makeStack());
+      const alarms = t.findResources("AWS::CloudWatch::Alarm");
+      const alarm = Object.values(alarms)[0];
+      const metrics = alarm.Properties.Metrics ?? [];
+      // At least one MetricDataQuery entry should carry the SEARCH
+      // expression pinning "AuthenticationError".
+      const exprs = metrics
+        .map((m: { Expression?: string }) => m.Expression)
+        .filter((e: string | undefined): e is string => typeof e === "string");
+      expect(exprs.length).toBeGreaterThan(0);
+      const combined = exprs.join(" ");
+      expect(combined).toContain("SEARCH");
+      expect(combined).toContain("anthropic_latency_ms");
+      expect(combined).toContain("AuthenticationError");
+      expect(combined).toContain("SampleCount");
+    });
+
+    test("alarm threshold = 1 (single AuthenticationError triggers)", () => {
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        Threshold: 1,
+        ComparisonOperator: "GreaterThanOrEqualToThreshold",
+        EvaluationPeriods: 1,
+        DatapointsToAlarm: 1,
+      });
+    });
+
+    test("alarm treats missing data as NOT_BREACHING (silent-app-is-OK)", () => {
+      // Sustained missing data (no auth errors in a window) must NOT
+      // hold the alarm in ALARM state — that would be a permanent
+      // false-positive as soon as auth errors stopped. NOT_BREACHING
+      // (== "notBreaching" in CFN JSON) is the correct choice for a
+      // rare-event error metric.
+      const t = Template.fromStack(makeStack());
+      t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        TreatMissingData: "notBreaching",
+      });
+    });
+
+    test("alarm publishes to the SNS alerts topic (not a stray topic)", () => {
+      // The alarm action MUST reference the same SNS topic we created,
+      // otherwise the alarm is decorative — it enters ALARM state but
+      // no email ever fires.
+      const t = Template.fromStack(makeStack());
+      const alarms = t.findResources("AWS::CloudWatch::Alarm");
+      const alarm = Object.values(alarms)[0];
+      const actions = alarm.Properties.AlarmActions ?? [];
+      expect(actions.length).toBe(1);
+      // CDK renders topic ARNs as { Ref: "AlertsTopic..." } tokens.
+      // Stringify and match the logical id prefix.
+      const actionBlob = JSON.stringify(actions[0]);
+      expect(actionBlob).toContain("AlertsTopic");
+    });
+
+    test("alarm description mentions credit exhaustion + recharge URL (runbook-in-a-tooltip)", () => {
+      // The description is what shows in the SNS email body. If it
+      // just says "AlarmName ALARM state", the operator has to hunt
+      // through CloudWatch to figure out what to do. Bake the fix into
+      // the description so email → recharge is one click.
+      const t = Template.fromStack(makeStack());
+      const alarms = t.findResources("AWS::CloudWatch::Alarm");
+      const alarm = Object.values(alarms)[0];
+      const desc = alarm.Properties.AlarmDescription as string;
+      expect(desc).toContain("credit");
+      expect(desc).toContain("console.anthropic.com");
+    });
+
+    test("alerts-topic ARN + alarm name are in outputs (post-deploy discovery)", () => {
+      const t = Template.fromStack(makeStack());
+      const outputs = t.findOutputs("*");
+      const keys = Object.keys(outputs);
+      expect(
+        keys.some((k) => k.toLowerCase().includes("alertstopic")),
+      ).toBe(true);
+      expect(
+        keys.some((k) => k.toLowerCase().includes("anthropicautherror")),
+      ).toBe(true);
+    });
   });
 });

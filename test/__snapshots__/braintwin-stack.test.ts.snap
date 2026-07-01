@@ -32,6 +32,18 @@ exports[`BrainTwinStack — us-west-2 (M.2.b/c scaffold) CloudFormation template
         ],
       },
     },
+    "ObservabilityAlertsTopicArn95166259": {
+      "Description": "SNS topic for operational alerts (Anthropic AuthenticationError etc.). Email subscription is created only if BRAINTWIN_ALERT_EMAIL was set at synth time. To add more subscribers post-deploy: aws sns subscribe --topic-arn <arn> --protocol email --notification-endpoint <addr> --profile braintwin",
+      "Value": {
+        "Ref": "ObservabilityAlertsTopic6A72CF37",
+      },
+    },
+    "ObservabilityAnthropicAuthErrorAlarmNameEA3BEA66": {
+      "Description": "CloudWatch alarm on Anthropic 401 (credit exhaustion / bad key). Fires when >= 1 AuthenticationError sample appears in a 5-minute window. When it fires, recharge Anthropic credit at https://console.anthropic.com/settings/billing (or rotate the key in SSM at /braintwin/anthropic_api_key if you rotated it).",
+      "Value": {
+        "Ref": "ObservabilityAnthropicAuthErrorAlarmB3081D0A",
+      },
+    },
     "ObservabilityAppDashboardUrl902F47D9": {
       "Description": "CloudWatch dashboard for app-level metrics (M.11). Open this URL to see per-route HTTP latency, Anthropic call timing, and Chroma query latency.",
       "Value": {
@@ -1611,6 +1623,75 @@ CADDYFILE_EOF
       },
       "Type": "AWS::EC2::VPCGatewayAttachment",
     },
+    "ObservabilityAlertsTopic6A72CF37": {
+      "Properties": {
+        "DisplayName": "BrainTwin Operational Alerts",
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+        "TopicName": "BrainTwin-Alerts",
+      },
+      "Type": "AWS::SNS::Topic",
+    },
+    "ObservabilityAnthropicAuthErrorAlarmB3081D0A": {
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "ObservabilityAlertsTopic6A72CF37",
+          },
+        ],
+        "AlarmDescription": "Anthropic API returned AuthenticationError - most likely cause is exhausted prepaid credit on the Anthropic account (recharge at https://console.anthropic.com/settings/billing). Second most likely cause is a rotated / revoked API key. Until this clears, /capture enrichment and /recall Sonnet reasoning both fail with PermanentLLMError.",
+        "AlarmName": "BrainTwin-Anthropic-AuthError",
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "SUM(SEARCH('{BrainTwin/App,endpoint,model,error} MetricName="anthropic_latency_ms" "AuthenticationError"', 'SampleCount', 300))",
+            "Id": "expr_1",
+            "Label": "Anthropic AuthenticationError count (all endpoints)",
+            "Period": 300,
+            "ReturnData": true,
+          },
+        ],
+        "Tags": [
+          {
+            "Key": "ManagedBy",
+            "Value": "BrainTwinCDK",
+          },
+          {
+            "Key": "Phase",
+            "Value": "4.0.6",
+          },
+          {
+            "Key": "Project",
+            "Value": "BrainTwin",
+          },
+          {
+            "Key": "Region",
+            "Value": "us-west-2",
+          },
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "notBreaching",
+      },
+      "Type": "AWS::CloudWatch::Alarm",
+    },
     "ObservabilityAppDashboard5754F798": {
       "Properties": {
         "DashboardBody": {
@@ -1641,19 +1722,23 @@ CADDYFILE_EOF
               {
                 "Ref": "AWS::Region",
               },
-              "","metrics":[["BrainTwin/App","chroma_query_latency_ms","collection","chunks","error","none","top_k","20",{"label":"chunks top_k=20","stat":"p95"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":0,"y":18,"properties":{"view":"timeSeries","title":"CPU usage % (per cpu — averages across all cores)","region":"",
+              "","metrics":[["BrainTwin/App","chroma_query_latency_ms","collection","chunks","error","none","top_k","20",{"label":"chunks top_k=20","stat":"p95"}]],"yAxis":{}}},{"type":"metric","width":24,"height":6,"x":0,"y":18,"properties":{"view":"timeSeries","title":"Anthropic errors by class (SampleCount per 5min)","region":"",
               {
                 "Ref": "AWS::Region",
               },
-              "","metrics":[[{"label":"user","expression":"SEARCH('{BrainTwin/System,cpu} MetricName=\\"cpu_usage_user\\"', 'Average', 300)"}],[{"label":"iowait","expression":"SEARCH('{BrainTwin/System,cpu} MetricName=\\"cpu_usage_iowait\\"', 'Average', 300)"}],[{"label":"system","expression":"SEARCH('{BrainTwin/System,cpu} MetricName=\\"cpu_usage_system\\"', 'Average', 300)"}],[{"label":"idle","expression":"SEARCH('{BrainTwin/System,cpu} MetricName=\\"cpu_usage_idle\\"', 'Average', 300)"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":12,"y":18,"properties":{"view":"timeSeries","title":"Memory % (used + available)","region":"",
+              "","metrics":[[{"label":"AuthenticationError (credits exhausted / bad key)","expression":"SUM(SEARCH('{BrainTwin/App,endpoint,model,error} MetricName=\\"anthropic_latency_ms\\" \\"AuthenticationError\\"', 'SampleCount', 300))"}],[{"label":"RateLimitError (429)","expression":"SUM(SEARCH('{BrainTwin/App,endpoint,model,error} MetricName=\\"anthropic_latency_ms\\" \\"RateLimitError\\"', 'SampleCount', 300))"}],[{"label":"APIConnectionError (network / DNS)","expression":"SUM(SEARCH('{BrainTwin/App,endpoint,model,error} MetricName=\\"anthropic_latency_ms\\" \\"APIConnectionError\\"', 'SampleCount', 300))"}],[{"label":"APIStatusError (5xx / non-standard 4xx)","expression":"SUM(SEARCH('{BrainTwin/App,endpoint,model,error} MetricName=\\"anthropic_latency_ms\\" \\"APIStatusError\\"', 'SampleCount', 300))"}],[{"label":"BadRequestError (400 — payload / quota)","expression":"SUM(SEARCH('{BrainTwin/App,endpoint,model,error} MetricName=\\"anthropic_latency_ms\\" \\"BadRequestError\\"', 'SampleCount', 300))"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":0,"y":24,"properties":{"view":"timeSeries","title":"CPU usage % (per cpu — averages across all cores)","region":"",
               {
                 "Ref": "AWS::Region",
               },
-              "","metrics":[[{"label":"mem_used_percent","expression":"SEARCH('{BrainTwin/System} MetricName=\\"mem_used_percent\\"', 'Average', 300)"}],[{"label":"mem_available_percent","expression":"SEARCH('{BrainTwin/System} MetricName=\\"mem_available_percent\\"', 'Average', 300)"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":0,"y":24,"properties":{"view":"timeSeries","title":"Disk used % (per partition)","region":"",
+              "","metrics":[[{"label":"user","expression":"SEARCH('{BrainTwin/System,cpu} MetricName=\\"cpu_usage_user\\"', 'Average', 300)"}],[{"label":"iowait","expression":"SEARCH('{BrainTwin/System,cpu} MetricName=\\"cpu_usage_iowait\\"', 'Average', 300)"}],[{"label":"system","expression":"SEARCH('{BrainTwin/System,cpu} MetricName=\\"cpu_usage_system\\"', 'Average', 300)"}],[{"label":"idle","expression":"SEARCH('{BrainTwin/System,cpu} MetricName=\\"cpu_usage_idle\\"', 'Average', 300)"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":12,"y":24,"properties":{"view":"timeSeries","title":"Memory % (used + available)","region":"",
               {
                 "Ref": "AWS::Region",
               },
-              "","metrics":[[{"label":"used %","expression":"SEARCH('{BrainTwin/System,device,fstype,path} MetricName=\\"used_percent\\"', 'Average', 300)"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":12,"y":24,"properties":{"view":"timeSeries","title":"Disk I/O bytes/sec (per device)","region":"",
+              "","metrics":[[{"label":"mem_used_percent","expression":"SEARCH('{BrainTwin/System} MetricName=\\"mem_used_percent\\"', 'Average', 300)"}],[{"label":"mem_available_percent","expression":"SEARCH('{BrainTwin/System} MetricName=\\"mem_available_percent\\"', 'Average', 300)"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":0,"y":30,"properties":{"view":"timeSeries","title":"Disk used % (per partition)","region":"",
+              {
+                "Ref": "AWS::Region",
+              },
+              "","metrics":[[{"label":"used %","expression":"SEARCH('{BrainTwin/System,device,fstype,path} MetricName=\\"used_percent\\"', 'Average', 300)"}]],"yAxis":{}}},{"type":"metric","width":12,"height":6,"x":12,"y":30,"properties":{"view":"timeSeries","title":"Disk I/O bytes/sec (per device)","region":"",
               {
                 "Ref": "AWS::Region",
               },
