@@ -251,6 +251,26 @@ export class ComputeConstruct extends Construct {
     //     (a remote curl).
     // -----------------------------------------------------------------
     const assetsDir = path.join(__dirname, "..", "..", "assets");
+    // The CW Agent config drops BOTH instance-lifetime dimensions:
+    //   - `append_dimensions` (InstanceId) is removed → no InstanceId tag
+    //   - `omit_hostname: true` is set in the agent block → no host tag
+    //
+    // Why: we run a single EC2 architecture; each §14.1 instance
+    // replacement would otherwise mint new InstanceId-AND-host-tagged
+    // metric tuples that persist for 15 months (CW custom-metric
+    // retention), accumulating cost (~$0.30/metric/month each) AND
+    // chart clutter (one ghost line per old instance in every SEARCH
+    // expression) without any informational value. There's only ever
+    // one BrainTwin EC2 emitting at a time.
+    //
+    // With both dropped, every replacement reuses the same metric
+    // tuples — charts show one line per real physical dimension (per
+    // CPU, per partition), cost stays bounded.
+    //
+    // Add either dimension back ONLY if we move to multi-instance
+    // (e.g., the Phase 5 horizontal scaling path in §13 of the main
+    // design doc), and even then prefer a stable label like `az` or
+    // `node-role` over the ephemeral InstanceId.
     this.cwAgentConfigAsset = new s3assets.Asset(this, "CWAgentConfigAsset", {
       path: path.join(assetsDir, "amazon-cloudwatch-agent.json"),
     });
