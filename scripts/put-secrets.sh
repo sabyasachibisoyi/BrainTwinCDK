@@ -25,7 +25,17 @@ NAMES=(
   "/braintwin/bearer_token"
   "/braintwin/telegram_token"
   "/braintwin/cloudflare_api_token"
-  "/braintwin/allowed_telegram_user_ids"
+  # ---- Phase 4.1 M.M.1.b — Google OAuth + JWT + hidden-onboarding ----
+  # The last two exist from Day 0 with placeholder values because the
+  # eval-bearer-token AND join-slug are BOTH referenced by IAM/routes
+  # long before Phase 4.1 lands (design doc §7.4 + Fable §5.4). Adding
+  # them to put-secrets.sh at this milestone keeps discovery-driven
+  # M.10 refresh working in one pass instead of two.
+  "/braintwin/google_oauth_client_id"
+  "/braintwin/google_oauth_client_secret"
+  "/braintwin/jwt_secret"
+  "/braintwin/eval_bearer_token"
+  "/braintwin/join_slug"
 )
 
 DESCRIPTIONS=(
@@ -33,7 +43,16 @@ DESCRIPTIONS=(
   "Backend bearer token (matches BACKEND_BEARER_TOKEN — same value Chrome extension sends)."
   "Telegram bot token (123456:ABC-DEF…). Leave empty to skip bot."
   "Cloudflare API token (Zone:DNS:Edit + Origin Pull). Used by Caddy for ACME DNS-01 + AOP."
-  "Allowed Telegram user IDs (comma-separated, e.g. '123456789,987654321'). Bot rejects messages from anyone else."
+  # ---- Phase 4.1 M.M.1.b entries -------------------------------------
+  # google_oauth_client_id is technically PUBLIC (Google shows it in the
+  # consent screen URL) but stored as SecureString here for uniformity.
+  # No security cost; a tiny convenience cost (must aws ssm get-parameter
+  # --with-decryption to read it, same as every other value in this file).
+  "Google OAuth 2.0 client_id (…apps.googleusercontent.com). Public but stored SecureString for uniformity. Create at console.cloud.google.com → APIs & Services → Credentials."
+  "Google OAuth 2.0 client_secret (GOCSPX-…). Genuinely secret — never put in code. Same Console screen as client_id, revealed once at creation (regenerate if lost)."
+  "JWT signing secret (32 random bytes hex). Generate with: openssl rand -hex 32. Bumping this INVALIDATES every live JWT (equivalent to bumping token_version for every user simultaneously) — do that only when doing a hard reset."
+  "Long-lived JWT for the dedicated eval user (Phase 4.0.5 §3.5 step 7). Day-0 value: paste the CURRENT /braintwin/bearer_token value here so the nightly eval workflow keeps working; swap to the real eval-user JWT after M.M.1.d lands (design doc §7.4)."
+  "URL-safe onboarding slug for the hidden /join/{slug} page (Fable §5.4). Generate with: openssl rand -base64 24 | tr '+/' '-_' | tr -d '='. Never in code, never in README — share the /join/<slug> URL with friends privately (email/Signal)."
 )
 
 echo "Populating BrainTwin SSM Parameters in ${REGION} (profile: ${PROFILE})"
